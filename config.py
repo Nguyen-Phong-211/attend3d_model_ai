@@ -11,7 +11,7 @@ class Config:
     EMBEDDING_DIM = 512
     BATCH_SIZE = 32
     LEARNING_RATE = 0.001
-    EPOCHS = 50
+    EPOCHS = 30
     NUM_WORKERS = 4
     SEED = 42
     
