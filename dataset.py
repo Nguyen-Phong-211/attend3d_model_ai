@@ -1,183 +1,182 @@
+# dataset.py
 import os
+import glob
+from PIL import Image
+import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-import cv2
-import numpy as np
-from PIL import Image
-from tqdm import tqdm
-import glob
 from torchvision import transforms
+import random
 
 class Face3DDataset(Dataset):
-    def __init__(self, data_root, transform=None, mode='train'):
+    """
+    Expects data layout:
+    DATA_ROOT/
+      AFW/
+        AFW_134212_1_0/
+          AFW_134212_1_0_depth.jpg
+          AFW_134212_1_0_normals.png
+          AFW_134212_1_0.obj
+          AFW_134212_1_0.png
+        ...
+      HELEN/...
+    Also allows sibling vis images: AFW_134212_1_0_vis.jpg located next to the folder.
+    """
+    def __init__(self, data_root, config, mode='train'):
+        super().__init__()
         self.data_root = data_root
-        # self.transform = transforms
-        self.transform = transform or transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomRotation(degrees=10),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2),
-            transforms.ToTensor(),
-        ])
+        self.config = config
         self.mode = mode
-        self.samples = []
-        self.labels = []
-        
-        # Load all data
-        self._load_data()
-        
-    def _load_data(self):
-        """Load all samples from dataset folders"""
-        print("Loading dataset...")
-        
-        # Các thư mục dataset
-        dataset_folders = ['AFW', 'HELEN', 'IBUG', 'LFPW']
-        
-        # Collect all subfolders
-        all_folders = []
-        for dataset_name in dataset_folders:
-            dataset_path = os.path.join(self.data_root, dataset_name)
-            if os.path.exists(dataset_path):
-                subfolders = [os.path.join(dataset_path, f) for f in os.listdir(dataset_path) 
-                             if os.path.isdir(os.path.join(dataset_path, f))]
-                all_folders.extend(subfolders)
-        
-        # Create label mapping
-        # unique_folders = list(set([os.path.basename(f) for f in all_folders]))
-        # self.label_map = {folder_name: idx for idx, folder_name in enumerate(unique_folders)}
-        # Gán nhãn theo người (ví dụ dùng thư mục cha làm identity)
-        person_ids = set()
 
-        for folder_path in all_folders:
-            parent_dir = os.path.basename(os.path.dirname(folder_path))
-            person_id = parent_dir + "_" + folder_path.split("_")[1]
-            person_ids.add(person_id)
+        # transforms
+        self.rgb_tf = transforms.Compose([
+            transforms.Resize((config.IMAGE_SIZE, config.IMAGE_SIZE)),
+            transforms.RandomHorizontalFlip() if mode=='train' else transforms.Identity(),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
+        ])
+        # normals: treat as RGB
+        self.norm_tf = transforms.Compose([
+            transforms.Resize((config.IMAGE_SIZE, config.IMAGE_SIZE)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5,0.5,0.5], std=[0.5,0.5,0.5])
+        ])
+        # depth: single channel, normalize to [0,1]
+        self.depth_tf = transforms.Compose([
+            transforms.Resize((config.IMAGE_SIZE, config.IMAGE_SIZE)),
+            transforms.ToTensor(),  # will be (1,H,W)
+        ])
 
-        person_ids = sorted(list(person_ids))
-        self.label_map = {pid: idx for idx, pid in enumerate(person_ids)}
-        
-        # Create samples
-        for folder_path in tqdm(all_folders, desc="Loading samples"):
-            folder_name = os.path.basename(folder_path)
-            parent_dir = os.path.basename(os.path.dirname(folder_path))
-            person_id = parent_dir + "_" + folder_name.split("_")[1]
-                
-            # if folder_name in self.label_map:
-            #     label = self.label_map[folder_name]
-            if person_id in self.label_map:
-                label = self.label_map[person_id]
-                # Check if required files exist
-                depth_path = os.path.join(folder_path, f"{folder_name}_depth.jpg")
-                normal_path = os.path.join(folder_path, f"{folder_name}_normals.png")
-                obj_path = os.path.join(folder_path, f"{folder_name}.obj")
-                
-                if os.path.exists(depth_path) and os.path.exists(normal_path):
-                    self.samples.append({
-                        'folder_path': folder_path,
-                        'folder_name': folder_name,
-                        'depth_path': depth_path,
-                        'normal_path': normal_path,
-                        'obj_path': obj_path
-                    })
-                    self.labels.append(label)
-        
-        print(f"Loaded {len(self.samples)} samples with {len(self.label_map)} unique classes")
-    
+        self.samples = []  # list of dicts: {'folder':..., 'name':..., 'vis':..., 'depth':..., 'normals':..., 'obj':...}
+        self.label_map = {}
+        self._prepare_index()
+
+    def _prepare_index(self):
+        # find all sample folders under dataset subfolders
+        candidate_folders = []
+        for ds in os.listdir(self.data_root):
+            ds_path = os.path.join(self.data_root, ds)
+            if not os.path.isdir(ds_path): continue
+            for folder in os.listdir(ds_path):
+                folder_path = os.path.join(ds_path, folder)
+                if os.path.isdir(folder_path):
+                    candidate_folders.append(folder_path)
+
+        # Build samples
+        for folder_path in candidate_folders:
+            base = os.path.basename(folder_path)
+            depth = os.path.join(folder_path, f"{base}_depth.jpg")
+            normals = os.path.join(folder_path, f"{base}_normals.png")
+            obj = os.path.join(folder_path, f"{base}.obj")
+            # sibling vis images might be next to folder
+            vis_candidate1 = os.path.join(os.path.dirname(folder_path), f"{base}_vis.jpg")
+            vis_candidate2 = os.path.join(folder_path, f"{base}.png")
+            vis = vis_candidate1 if os.path.exists(vis_candidate1) else (vis_candidate2 if os.path.exists(vis_candidate2) else None)
+
+            # require at least vis and depth or normals
+            if vis is None:
+                continue
+            if not os.path.exists(depth) and not os.path.exists(normals) and not os.path.exists(obj):
+                continue
+
+            # infer person id: try to use prefix before first underscore (dataset dependent)
+            # Better: use parent folder name + ID to make unique identities
+            parent = os.path.basename(os.path.dirname(folder_path))
+            # use base tokenization with dataset-specific logic if needed
+            person_id = f"{parent}__{base.split('_')[1] if '_' in base else base}"
+
+            if person_id not in self.label_map:
+                self.label_map[person_id] = len(self.label_map)
+
+            self.samples.append({
+                'folder': folder_path,
+                'base': base,
+                'vis': vis,
+                'depth': depth if os.path.exists(depth) else None,
+                'normals': normals if os.path.exists(normals) else None,
+                'obj': obj if os.path.exists(obj) else None,
+                'label': self.label_map[person_id]
+            })
+
+        print(f"Found {len(self.samples)} samples, {len(self.label_map)} identities")
+
     def __len__(self):
         return len(self.samples)
-    
-    def __getitem__(self, idx):
-        sample = self.samples[idx]
-        label = self.labels[idx]
-        
-        # Load depth image
-        depth_img = None
-        if os.path.exists(sample['depth_path']):
-            depth_img = cv2.imread(sample['depth_path'], cv2.IMREAD_GRAYSCALE)
-            if depth_img is not None:
-                depth_img = cv2.resize(depth_img, (224, 224))
-                # depth_img = depth_img.astype(np.float32) / 255.0
-                # depth_img = torch.from_numpy(depth_img).unsqueeze(0)  # (1, 224, 224)
-                depth_img = depth_img.astype(np.uint8)  # transform cần kiểu uint8
-                depth_img = self.transform(depth_img)  # (1, 224, 224)
-        
-        # Load normal map
-        normal_img = None
-        if os.path.exists(sample['normal_path']):
-            normal_img = cv2.imread(sample['normal_path'])
-            if normal_img is not None:
-                normal_img = cv2.cvtColor(normal_img, cv2.COLOR_BGR2RGB)
-                normal_img = cv2.resize(normal_img, (224, 224))
-                # normal_img = normal_img.astype(np.float32) / 255.0
-                # normal_img = torch.from_numpy(normal_img).permute(2, 0, 1)  # (3, 224, 224)
-                normal_img = normal_img.astype(np.uint8)
-                normal_img = self.transform(normal_img)
-        
-        # Load mesh vertices (optional)
-        mesh_vertices = self._load_mesh_vertices(sample['obj_path'])
-        
-        # Create input dictionary
-        inputs = {}
-        if depth_img is not None:
-            inputs['depth'] = depth_img
-        if normal_img is not None:
-            inputs['normals'] = normal_img
-        if mesh_vertices is not None:
-            inputs['mesh'] = mesh_vertices
-            
-        return inputs, label
-    
-    def _load_mesh_vertices(self, obj_path):
-        """Load vertices from .obj file"""
-        if not os.path.exists(obj_path):
-            return None
-            
-        try:
-            vertices = []
-            with open(obj_path, 'r') as f:
-                for line in f:
-                    if line.startswith('v '):
-                        coords = line.strip().split()[1:]
-                        if len(coords) >= 3:
-                            vertices.append([float(coord) for coord in coords[:3]])
-            
-            if len(vertices) > 0:
-                # Limit to 1024 vertices and convert to tensor
-                vertices = np.array(vertices[:1024], dtype=np.float32)
-                vertices = torch.from_numpy(vertices).transpose(0, 1)  # (3, N)
-                return vertices
-        except Exception as e:
-            print(f"Error loading mesh {obj_path}: {e}")
-        
-        return None
 
-def get_dataloaders(config):
-    """Create train and validation dataloaders"""
-    dataset = Face3DDataset(config.DATA_ROOT)
-    
-    # Split into train/val
-    total_size = len(dataset)
-    train_size = int(0.8 * total_size)
-    val_size = total_size - train_size
-    
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        dataset, [train_size, val_size]
-    )
-    
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config.BATCH_SIZE,
-        shuffle=True,
-        num_workers=config.NUM_WORKERS,
-        pin_memory=False
-    )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config.BATCH_SIZE,
-        shuffle=False,
-        num_workers=config.NUM_WORKERS,
-        pin_memory=False
-    )
-    
+    def _load_obj_vertices(self, obj_path):
+        # read v lines, return (N,3) numpy float32
+        if obj_path is None or not os.path.exists(obj_path): return None
+        verts = []
+        with open(obj_path, 'r') as f:
+            for line in f:
+                if line.startswith('v '):
+                    parts = line.strip().split()[1:]
+                    if len(parts) >= 3:
+                        verts.append([float(parts[0]), float(parts[1]), float(parts[2])])
+        if len(verts) == 0:
+            return None
+        verts = np.array(verts, dtype=np.float32)
+        # sample or pad to M x 3
+        M = self.config.MESH_MAX_VERTICES
+        if verts.shape[0] >= M:
+            idx = np.linspace(0, verts.shape[0]-1, num=M).astype(int)
+            verts = verts[idx]
+        else:
+            pad = np.zeros((M - verts.shape[0], 3), dtype=np.float32)
+            verts = np.vstack([verts, pad])
+        return torch.from_numpy(verts)  # (M,3)
+
+    def __getitem__(self, idx):
+        s = self.samples[idx]
+        # load vis (RGB)
+        vis_img = Image.open(s['vis']).convert('RGB')
+        vis = self.rgb_tf(vis_img)
+
+        depth = None
+        if s['depth'] is not None and os.path.exists(s['depth']):
+            d = Image.open(s['depth']).convert('L')  # single channel
+            depth = self.depth_tf(d)  # (1,H,W)
+
+        normals = None
+        if s['normals'] is not None and os.path.exists(s['normals']):
+            n = Image.open(s['normals']).convert('RGB')
+            normals = self.norm_tf(n)
+
+        mesh = None
+        if self.config.USE_MESH and s['obj'] is not None and os.path.exists(s['obj']):
+            verts = self._load_obj_vertices(s['obj'])
+            if verts is not None:
+                # return (3, M) for conv1d style
+                mesh = verts.transpose(0,1)  # (M,3) -> (3,M)
+                mesh = mesh.float()
+
+        sample = {}
+        sample['vis'] = vis
+        if depth is not None:
+            sample['depth'] = depth
+        if normals is not None:
+            sample['normals'] = normals
+        if mesh is not None:
+            sample['mesh'] = mesh  # (M,3) as tensor
+
+        label = s['label']
+        return sample, label
+
+def get_dataloaders(config, split=0.8):
+    dataset = Face3DDataset(config.DATA_ROOT, config, mode='train')
+    n = len(dataset)
+    if n == 0:
+        raise RuntimeError("No data found. Check DATA_ROOT and file layout.")
+    idxs = list(range(n))
+    random.seed(config.SEED)
+    random.shuffle(idxs)
+    split_idx = int(split * n)
+    train_idx = idxs[:split_idx]
+    val_idx = idxs[split_idx:]
+    from torch.utils.data import Subset
+    train_ds = Subset(dataset, train_idx)
+    val_ds = Subset(dataset, val_idx)
+
+    train_loader = DataLoader(train_ds, batch_size=config.BATCH_SIZE, shuffle=True, num_workers=config.NUM_WORKERS, pin_memory=True)
+    val_loader = DataLoader(val_ds, batch_size=config.BATCH_SIZE, shuffle=False, num_workers=config.NUM_WORKERS, pin_memory=True)
     return train_loader, val_loader, len(dataset.label_map)

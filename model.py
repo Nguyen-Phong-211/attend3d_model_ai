@@ -1,172 +1,191 @@
+# model.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
-from torchvision.models import ResNet18_Weights
 
-class DepthFeatureExtractor(nn.Module):
-    def __init__(self, embedding_dim=512):
-        super(DepthFeatureExtractor, self).__init__()
-        self.backbone = models.resnet18(weights=ResNet18_Weights.DEFAULT)
-        # resnet = models.resnet18(weights=ResNet18_Weights.DEFAULT)
-        self.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.backbone.fc = nn.Linear(512, embedding_dim)
-        
-    def forward(self, x):
-        return self.backbone(x)
+# ArcFace / AddMargin (simple implementation)
+class ArcFaceHead(nn.Module):
+    def __init__(self, in_features, out_features, s=30.0, m=0.3):
+        super().__init__()
+        self.weight = nn.Parameter(torch.Tensor(out_features, in_features))
+        nn.init.xavier_uniform_(self.weight)
+        self.s = s
+        self.m = m
+        self.cos_m = torch.cos(m)
+        self.sin_m = torch.sin(m)
+        self.th = torch.cos(torch.pi - m)
+        self.mm = torch.sin(torch.pi - m) * m
 
-class NormalFeatureExtractor(nn.Module):
-    def __init__(self, embedding_dim=512):
-        super(NormalFeatureExtractor, self).__init__()
-        self.backbone = models.resnet18(pretrained=True)
-        self.backbone.fc = nn.Linear(512, embedding_dim)
-        
-    def forward(self, x):
-        return self.backbone(x)
+    def forward(self, embeddings, labels=None):
+        # embeddings: (B, C), weight: (num_classes, C)
+        normalized_emb = F.normalize(embeddings, dim=1)
+        normalized_w = F.normalize(self.weight, dim=1)
+        cos = F.linear(normalized_emb, normalized_w)  # (B, num_classes)
+        if labels is None:
+            # inference: return logits scaled
+            return cos * self.s
+        # margin add
+        one_hot = torch.zeros_like(cos)
+        one_hot.scatter_(1, labels.view(-1,1), 1.0)
+        cos_theta = cos.clamp(-1+1e-7, 1-1e-7)
+        theta = torch.acos(cos_theta)
+        cos_m_theta = torch.cos(theta + self.m)
+        logits = cos * (1 - one_hot) + cos_m_theta * one_hot
+        logits = logits * self.s
+        return logits
 
-class MeshFeatureExtractor(nn.Module):
-    def __init__(self, input_dim=3, embedding_dim=512):
-        super(MeshFeatureExtractor, self).__init__()
-        self.conv1 = nn.Conv1d(input_dim, 64, 1)
-        self.conv2 = nn.Conv1d(64, 128, 1)
-        self.conv3 = nn.Conv1d(128, 256, 1)
-        self.conv4 = nn.Conv1d(256, 512, 1)
-        self.fc = nn.Linear(512, embedding_dim)
-        self.bn1 = nn.BatchNorm1d(64)
-        self.bn2 = nn.BatchNorm1d(128)
-        self.bn3 = nn.BatchNorm1d(256)
-        self.bn4 = nn.BatchNorm1d(512)
+# Simple PointNet-like mesh branch
+class MeshBranch(nn.Module):
+    def __init__(self, in_channels=3, out_dim=512, hidden=[64,128,256,512]):
+        super().__init__()
+        self.conv1 = nn.Conv1d(in_channels, hidden[0], 1)
+        self.conv2 = nn.Conv1d(hidden[0], hidden[1], 1)
+        self.conv3 = nn.Conv1d(hidden[1], hidden[2], 1)
+        self.conv4 = nn.Conv1d(hidden[2], hidden[3], 1)
+        self.bn1 = nn.BatchNorm1d(hidden[0])
+        self.bn2 = nn.BatchNorm1d(hidden[1])
+        self.bn3 = nn.BatchNorm1d(hidden[2])
+        self.bn4 = nn.BatchNorm1d(hidden[3])
         self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(0.3)
-        
+        self.fc = nn.Linear(hidden[3], out_dim)
+
     def forward(self, x):
-        x = self.relu(self.bn1(self.conv1(x)))
-        x = self.relu(self.bn2(self.conv2(x)))
-        x = self.relu(self.bn3(self.conv3(x)))
-        x = self.relu(self.bn4(self.conv4(x)))
-        # Global max pooling
-        x = torch.max(x, 2)[0]
-        x = self.dropout(x)
+        # x: (B, M, 3) OR (M,3), we expect (B, M, 3) -> transpose
+        if x.dim() == 3 and x.size(1) != 3:
+            # assume (B, M, 3)
+            x = x.transpose(1,2)  # to (B, 3, M)
+        elif x.dim() == 2:
+            # (M,3) -> (1,3,M)
+            x = x.unsqueeze(0).transpose(1,2)
+        elif x.dim() == 3 and x.size(1) == 3:
+            # (B,3,M) ok
+            pass
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.relu(self.bn2(self.conv2(out)))
+        out = self.relu(self.bn3(self.conv3(out)))
+        out = self.relu(self.bn4(self.conv4(out)))
+        # global max pool
+        out = torch.max(out, dim=2)[0]
+        out = self.fc(out)
+        return out
+
+# RGB backbone (ResNet50)
+class RGBBackbone(nn.Module):
+    def __init__(self, out_dim=512):
+        super().__init__()
+        res = models.resnet50(pretrained=True)
+        # remove fc
+        self.backbone = nn.Sequential(*(list(res.children())[:-1]))  # output (B,2048,1,1)
+        self.fc = nn.Linear(2048, out_dim)
+
+    def forward(self, x):
+        x = self.backbone(x)  # (B,2048,1,1)
+        x = x.view(x.size(0), -1)
         x = self.fc(x)
         return x
 
-class Face3DRecognitionModel(nn.Module):
-    def __init__(self, num_classes, embedding_dim=512):
-        super(Face3DRecognitionModel, self).__init__()
-        self.embedding_dim = embedding_dim
+# Depth / Normals backbone (ResNet18 but adapt channels)
+def make_resnet18_input_channels(channels, pretrained=True):
+    res = models.resnet18(pretrained=pretrained)
+    # replace conv1
+    res.conv1 = nn.Conv2d(channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+    return res
+
+class SmallBackbone(nn.Module):
+    def __init__(self, channels, out_dim=512):
+        super().__init__()
+        res = make_resnet18_input_channels(channels, pretrained=True)
+        res.fc = nn.Linear(512, out_dim)
+        self.model = res
+
+    def forward(self, x):
+        return self.model(x)
+
+# Full fusion model
+class Face3DFusionModel(nn.Module):
+    def __init__(self, num_classes, config):
+        super().__init__()
+        self.config = config
         self.num_classes = num_classes
-        
-        # Feature extractors
-        self.depth_extractor = DepthFeatureExtractor(embedding_dim)
-        self.normal_extractor = NormalFeatureExtractor(embedding_dim)
-        self.mesh_extractor = MeshFeatureExtractor(embedding_dim=embedding_dim)
-        
-        # Feature fusion
-        # self.fusion_layer = nn.Linear(embedding_dim * 3, embedding_dim)
-        self.fusion_layer = nn.Sequential(
-            nn.Linear(embedding_dim * 3, embedding_dim),
-            nn.BatchNorm1d(embedding_dim),
+        emb = config.EMBEDDING_DIM
+        # branches
+        self.rgb = RGBBackbone(out_dim=emb)
+        self.depth = SmallBackbone(channels=1, out_dim=emb)
+        self.normals = SmallBackbone(channels=3, out_dim=emb)
+        self.mesh = MeshBranch(in_channels=3, out_dim=emb) if config.USE_MESH else None
+
+        # fusion -> final embedding
+        fuse_dim = emb * (3 + (1 if self.mesh else 0))
+        self.fusion = nn.Sequential(
+            nn.Linear(fuse_dim, emb),
+            nn.BatchNorm1d(emb),
             nn.ReLU(),
-            nn.Dropout(0.5)
+            nn.Dropout(0.4)
         )
-        self.dropout = nn.Dropout(0.5)
-        self.bn = nn.BatchNorm1d(embedding_dim)
-        
-        # Classification head
-        self.classifier = nn.Linear(embedding_dim, num_classes)
-        
-        # Anti-spoofing head
-        self.anti_spoofing = nn.Sequential(
-            nn.Linear(embedding_dim, 256),
+
+        # ArcFace head
+        self.arcface = ArcFaceHead(in_features=emb, out_features=num_classes, s=config.ARC_FACE_S, m=config.ARC_FACE_M)
+
+        # anti-spoofing head (binary)
+        self.anti_spf = nn.Sequential(
+            nn.Linear(emb, 256),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(256, 1),
             nn.Sigmoid()
         )
-        
-    def forward(self, inputs):
-        features = []
-        
-        # Extract features from different modalities
-        if 'depth' in inputs:
-            depth_features = self.depth_extractor(inputs['depth'])
-            features.append(depth_features)
-        else:
-            depth_features = None
-            
-        if 'normals' in inputs:
-            normal_features = self.normal_extractor(inputs['normals'])
-            features.append(normal_features)
-        else:
-            normal_features = None
-            
-        if 'mesh' in inputs:
-            mesh_features = self.mesh_extractor(inputs['mesh'])
-            features.append(mesh_features)
-        else:
-            mesh_features = None
-        
-        # Fusion
-        if len(features) > 0:
-            if len(features) == 1:
-                fused_features = features[0]
+
+    def forward(self, inputs, labels=None):
+        # inputs: dict may contain 'vis', 'depth', 'normals', 'mesh' tensors
+        feats = []
+        device = next(self.parameters()).device
+        # RGB
+        if 'vis' in inputs and inputs['vis'] is not None:
+            rgb_f = self.rgb(inputs['vis'].to(device))
+            feats.append(rgb_f)
+        # depth
+        if 'depth' in inputs and inputs['depth'] is not None:
+            depth_f = self.depth(inputs['depth'].to(device))
+            feats.append(depth_f)
+        # normals
+        if 'normals' in inputs and inputs['normals'] is not None:
+            norm_f = self.normals(inputs['normals'].to(device))
+            feats.append(norm_f)
+        # mesh
+        if self.mesh is not None and 'mesh' in inputs and inputs['mesh'] is not None:
+            # mesh expected (B, M, 3) or (M,3)
+            mesh_in = inputs['mesh']
+            if mesh_in.dim() == 2:
+                mesh_in = mesh_in.unsqueeze(0).to(device)
             else:
-                concatenated = torch.cat(features, dim=1)
-                fused_features = self.fusion_layer(concatenated)
-                fused_features = self.bn(fused_features)
-                fused_features = self.dropout(fused_features)
+                mesh_in = mesh_in.to(device)
+            mesh_f = self.mesh(mesh_in)
+            feats.append(mesh_f)
+
+        if len(feats) == 0:
+            raise ValueError("No input modality provided")
+
+        if len(feats) == 1:
+            fused = feats[0]
         else:
-            # Fallback
-            batch_size = list(inputs.values())[0].size(0)
-            fused_features = torch.zeros(batch_size, self.embedding_dim, device=list(inputs.values())[0].device)
-        
-        # Classification
-        logits = self.classifier(fused_features)
-        
-        # Anti-spoofing
-        spoofing_score = None
-        if depth_features is not None and normal_features is not None:
-            # Combine depth and normal features for anti-spoofing
-            anti_spoofing_input = (depth_features + normal_features) / 2
-            spoofing_score = self.anti_spoofing(anti_spoofing_input)
-        
+            fused = torch.cat(feats, dim=1)
+            fused = self.fusion(fused)
+
+        embeddings = F.normalize(fused, dim=1)
+
+        # logits: ArcFace head expects labels optionally
+        logits = self.arcface(embeddings, labels) if labels is not None else self.arcface(embeddings, None)
+
+        # anti-spoofing score
+        spoof_score = self.anti_spf(embeddings)
+
         return {
-            'embeddings': fused_features,
+            'embeddings': embeddings,
             'logits': logits,
-            'spoofing_score': spoofing_score
+            'spoof_score': spoof_score
         }
-    
-    def get_embedding(self, inputs):
-        """Get feature embedding for inference"""
-        with torch.no_grad():
-            features = []
-            
-            if 'depth' in inputs:
-                depth_features = self.depth_extractor(inputs['depth'])
-                features.append(depth_features)
-                
-            if 'normals' in inputs:
-                normal_features = self.normal_extractor(inputs['normals'])
-                features.append(normal_features)
-                
-            if 'mesh' in inputs:
-                mesh_features = self.mesh_extractor(inputs['mesh'])
-                features.append(mesh_features)
-            
-            if len(features) > 0:
-                if len(features) == 1:
-                    fused_features = features[0]
-                else:
-                    concatenated = torch.cat(features, dim=1)
-                    fused_features = self.fusion_layer(concatenated)
-                    fused_features = self.bn(fused_features)
-            else:
-                batch_size = list(inputs.values())[0].size(0)
-                fused_features = torch.zeros(batch_size, self.embedding_dim, device=list(inputs.values())[0].device)
-                
-            return fused_features
 
 def create_model(num_classes, config):
-    """Factory function to create model"""
-    model = Face3DRecognitionModel(num_classes, config.EMBEDDING_DIM)
+    model = Face3DFusionModel(num_classes, config)
     return model
