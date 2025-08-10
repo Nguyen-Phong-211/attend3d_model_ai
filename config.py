@@ -4,7 +4,7 @@ import os
 
 class Config:
     # Data paths
-    DATA_ROOT = "/Volumes/WD 500GB EL/data"  # sửa nếu cần
+    DATA_ROOT = "/Volumes/WD 500GB EL/data"
 
     # Model / data
     IMAGE_SIZE = 224
@@ -16,7 +16,7 @@ class Config:
     EPOCHS = 60
     NUM_WORKERS = 8
     SEED = 42
-    USE_MESH = True         # bật/tắt branch mesh
+    USE_MESH = True
     MESH_MAX_VERTICES = 1024
 
     # ArcFace margin (for high-accuracy face recognition)

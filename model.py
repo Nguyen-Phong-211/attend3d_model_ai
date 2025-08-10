@@ -12,23 +12,30 @@ class ArcFaceHead(nn.Module):
         nn.init.xavier_uniform_(self.weight)
         self.s = s
         self.m = m
-        self.cos_m = torch.cos(m)
-        self.sin_m = torch.sin(m)
-        self.th = torch.cos(torch.pi - m)
-        self.mm = torch.sin(torch.pi - m) * m
+
+        # Ensure m is a tensor
+        m_tensor = torch.tensor(m, dtype=torch.float32)
+
+        # Register as buffers so they move with the model
+        self.register_buffer("cos_m", torch.cos(m_tensor))
+        self.register_buffer("sin_m", torch.sin(m_tensor))
+        self.register_buffer("th", torch.cos(torch.pi - m_tensor))
+        self.register_buffer("mm", torch.sin(torch.pi - m_tensor) * m_tensor)
 
     def forward(self, embeddings, labels=None):
         # embeddings: (B, C), weight: (num_classes, C)
         normalized_emb = F.normalize(embeddings, dim=1)
         normalized_w = F.normalize(self.weight, dim=1)
         cos = F.linear(normalized_emb, normalized_w)  # (B, num_classes)
+
         if labels is None:
             # inference: return logits scaled
             return cos * self.s
+
         # margin add
         one_hot = torch.zeros_like(cos)
-        one_hot.scatter_(1, labels.view(-1,1), 1.0)
-        cos_theta = cos.clamp(-1+1e-7, 1-1e-7)
+        one_hot.scatter_(1, labels.view(-1, 1), 1.0)
+        cos_theta = cos.clamp(-1 + 1e-7, 1 - 1e-7)
         theta = torch.acos(cos_theta)
         cos_m_theta = torch.cos(theta + self.m)
         logits = cos * (1 - one_hot) + cos_m_theta * one_hot

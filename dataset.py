@@ -129,7 +129,12 @@ class Face3DDataset(Dataset):
     def __getitem__(self, idx):
         s = self.samples[idx]
         # load vis (RGB)
-        vis_img = Image.open(s['vis']).convert('RGB')
+        try:
+            vis_img = Image.open(s['vis']).convert('RGB')
+        except (UnidentifiedImageError, OSError):
+            print(f"[WARN] Error loading image: {s['vis']} — skipped.")
+            return self.__getitem__((index + 1) % len(self.samples))
+
         vis = self.rgb_tf(vis_img)
 
         depth = None
