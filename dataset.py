@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 import random
+from PIL import Image, UnidentifiedImageError
 
 class Face3DDataset(Dataset):
     """
@@ -133,7 +134,7 @@ class Face3DDataset(Dataset):
             vis_img = Image.open(s['vis']).convert('RGB')
         except (UnidentifiedImageError, OSError):
             print(f"[WARN] Error loading image: {s['vis']} — skipped.")
-            return self.__getitem__((index + 1) % len(self.samples))
+            return self.__getitem__((idx + 1) % len(self.samples))
 
         vis = self.rgb_tf(vis_img)
 
