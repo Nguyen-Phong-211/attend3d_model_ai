@@ -47,6 +47,13 @@ This project is developed by [Your team/individual name] with the goal of [gener
    ```
 - Instructions for using other scripts (if any).
 
+## The commit history has been rewritten, so other machines will need to run:
+
+```bash
+git fetch --all
+git reset --hard origin/main
+```
+
 ## Contribution
 
 Contributions are welcome! Please open a pull request or create an issue to discuss further.
