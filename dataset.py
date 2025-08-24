@@ -54,9 +54,17 @@ class Face3DDataset(Dataset):
             transforms.ToTensor(),
         ])
 
-        self.samples = []
-        self.label_map = {}
-        self._prepare_index()
+        # self.samples = []
+        # self.label_map = {}
+        # self._prepare_index()
+        if samples is not None and label_map is not None:
+            self.samples = samples
+            self.label_map = label_map
+            print(f"[Reuse index] Found {len(self.samples)} samples, {len(self.label_map)} identities")
+        else:
+            self.samples = []
+            self.label_map = {}
+            self._prepare_index()
 
     def _prepare_index(self):
         candidate_folders = []
@@ -194,42 +202,87 @@ class Face3DDataset(Dataset):
         # 4. Trả về kết quả
         return sample, label, is_spoof
 
-def get_dataloaders(config, split=0.8):
-    dataset = Face3DDataset(config.DATA_ROOT, config, mode='train')
-    if len(dataset) == 0:
-        raise RuntimeError("No data found.")
+# def get_dataloaders(config, split=0.8):
+#     dataset = Face3DDataset(config.DATA_ROOT, config, mode='train')
+#     if len(dataset) == 0:
+#         raise RuntimeError("No data found.")
     
-    # <--- NEW: Identity-based split to prevent data leakage
-    identity_map = defaultdict(list)
-    for idx, sample in enumerate(dataset.samples):
-        identity_map[sample['label']].append(idx)
+#     # <--- NEW: Identity-based split to prevent data leakage
+#     identity_map = defaultdict(list)
+#     for idx, sample in enumerate(dataset.samples):
+#         identity_map[sample['label']].append(idx)
         
-    identities = list(identity_map.keys())
-    random.seed(config.SEED)
-    random.shuffle(identities)
+#     identities = list(identity_map.keys())
+#     random.seed(config.SEED)
+#     random.shuffle(identities)
     
-    split_idx = int(split * len(identities))
-    train_identities = identities[:split_idx]
-    val_identities = identities[split_idx:]
+#     split_idx = int(split * len(identities))
+#     train_identities = identities[:split_idx]
+#     val_identities = identities[split_idx:]
     
-    train_idx = []
-    for identity in train_identities:
-        train_idx.extend(identity_map[identity])
+#     train_idx = []
+#     for identity in train_identities:
+#         train_idx.extend(identity_map[identity])
         
-    val_idx = []
-    for identity in val_identities:
-        val_idx.extend(identity_map[identity])
+#     val_idx = []
+#     for identity in val_identities:
+#         val_idx.extend(identity_map[identity])
 
-    print(f"Splitting {len(identities)} identities: {len(train_identities)} train, {len(val_identities)} val.")
-    print(f"Resulting in {len(train_idx)} train samples, {len(val_idx)} val samples.")
+#     print(f"Splitting {len(identities)} identities: {len(train_identities)} train, {len(val_identities)} val.")
+#     print(f"Resulting in {len(train_idx)} train samples, {len(val_idx)} val samples.")
+
+#     from torch.utils.data import Subset
+#     # Make sure the dataset instance for validation does not use training augmentations
+#     val_dataset = Face3DDataset(config.DATA_ROOT, config, mode='val')
+#     train_ds = Subset(dataset, train_idx)
+#     val_ds = Subset(val_dataset, val_idx)
+
+#     train_loader = DataLoader(train_ds, batch_size=config.BATCH_SIZE, shuffle=True,
+#                           num_workers=config.NUM_WORKERS, pin_memory=True, drop_last=True)
+#     val_loader = DataLoader(val_ds, batch_size=config.BATCH_SIZE, shuffle=False,
+#                         num_workers=config.NUM_WORKERS, pin_memory=True, drop_last=True)
+
+    
+#     return train_loader, val_loader, len(dataset.label_map)
+def get_dataloaders(config, split=0.8):
+    # build 1 lần để có samples + label_map chuẩn
+    base = Face3DDataset(config.DATA_ROOT, config, mode='train')
+
+    from collections import defaultdict
+    identity_map = defaultdict(list)
+    for idx, sample in enumerate(base.samples):
+        identity_map[sample['label']].append(idx)
+
+    rng = random.Random(config.SEED)
+    train_idx, val_idx = [], []
+
+    # CHIA THEO ẢNH nhưng giữ nguyên ID giữa train/val
+    for ident, idxs in identity_map.items():
+        rng.shuffle(idxs)
+        cut = int(split * len(idxs))
+        # đảm bảo mỗi ID có ít nhất 1 ảnh cho val (nếu bạn muốn)
+        cut = max(1, min(cut, len(idxs)-1)) if len(idxs) >= 2 else len(idxs)
+        train_idx.extend(idxs[:cut])
+        val_idx.extend(idxs[cut:])
+
+    print(f"Image-level split: {len(train_idx)} train samples, {len(val_idx)} val samples over {len(identity_map)} identities.")
+
+    # tạo 2 dataset dùng chung samples/label_map để mapping class đồng nhất
+    train_dataset = Face3DDataset(config.DATA_ROOT, config, mode='train',
+                                  samples=base.samples, label_map=base.label_map)
+    val_dataset   = Face3DDataset(config.DATA_ROOT, config, mode='val',
+                                  samples=base.samples, label_map=base.label_map)
 
     from torch.utils.data import Subset
-    # Make sure the dataset instance for validation does not use training augmentations
-    val_dataset = Face3DDataset(config.DATA_ROOT, config, mode='val')
-    train_ds = Subset(dataset, train_idx)
-    val_ds = Subset(val_dataset, val_idx)
+    train_ds = Subset(train_dataset, train_idx)
+    val_ds   = Subset(val_dataset,   val_idx)
 
-    train_loader = DataLoader(train_ds, batch_size=config.BATCH_SIZE, shuffle=True, num_workers=config.NUM_WORKERS, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=config.BATCH_SIZE, shuffle=False, num_workers=config.NUM_WORKERS, pin_memory=True)
-    
-    return train_loader, val_loader, len(dataset.label_map)
+    # Với CPU/MPS trên Mac: pin_memory không có tác dụng → đặt theo thiết bị
+    use_pin = (config.DEVICE == "cuda")
+    train_loader = DataLoader(train_ds, batch_size=config.BATCH_SIZE, shuffle=True,
+                              num_workers=config.NUM_WORKERS, pin_memory=use_pin, drop_last=True)
+    # Val có model.eval() nên BatchNorm dùng running stats → để drop_last=False là hợp lý
+    val_loader   = DataLoader(val_ds,   batch_size=config.BATCH_SIZE, shuffle=False,
+                              num_workers=config.NUM_WORKERS, pin_memory=use_pin, drop_last=False)
+
+    return train_loader, val_loader, len(base.label_map)

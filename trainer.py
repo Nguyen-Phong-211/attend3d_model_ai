@@ -109,8 +109,9 @@ class Trainer:
         f1 = f1_score(all_labels, all_preds, average='weighted')
         return avg_loss, acc, f1
 
-    def save_checkpoint(self, epoch, val_acc):
-        fname = f"best_epoch_{epoch+1}_acc_{val_acc:.2f}.pth"
+    def save_checkpoint(self, epoch, val_acc, fname=None):
+        if fname is None:
+            fname = f"best_epoch_{epoch+1}_acc_{val_acc:.2f}.pth"
         state = {
             'model': self.model.state_dict(),
             'optimizer': self.optimizer.state_dict(),
@@ -132,6 +133,9 @@ class Trainer:
             # scheduler step
             self.scheduler.step()
 
-            if val_acc > best_acc:
+            # Save model file
+            self.save_checkpoint(epoch, val_acc, fname=f"best_model_{epoch+1}.pth")
+
+            if epoch == 0 or val_acc >= best_acc:
                 best_acc = val_acc
                 self.save_checkpoint(epoch, val_acc)
