@@ -31,7 +31,7 @@ class Face3DDataset(Dataset):
           ...
       HELEN/...
     """
-    def __init__(self, data_root, config, mode='train'):
+    def __init__(self, data_root, config, samples=None, label_map=None, mode='train'):
         super().__init__()
         self.data_root = data_root
         self.config = config
