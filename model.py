@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
+import numpy as np
 
 # ArcFace / AddMargin (simple implementation)
 class ArcFaceHead(nn.Module):
@@ -14,32 +15,40 @@ class ArcFaceHead(nn.Module):
         self.m = m
 
         # Ensure m is a tensor
-        m_tensor = torch.tensor(m, dtype=torch.float32)
+        # m_tensor = torch.tensor(m, dtype=torch.float32)
 
         # Register as buffers so they move with the model
-        self.register_buffer("cos_m", torch.cos(m_tensor))
-        self.register_buffer("sin_m", torch.sin(m_tensor))
-        self.register_buffer("th", torch.cos(torch.pi - m_tensor))
-        self.register_buffer("mm", torch.sin(torch.pi - m_tensor) * m_tensor)
+        # self.register_buffer("cos_m", torch.cos(m_tensor))
+        # self.register_buffer("sin_m", torch.sin(m_tensor))
+        # self.register_buffer("th", torch.cos(torch.pi - m_tensor))
+        # self.register_buffer("mm", torch.sin(torch.pi - m_tensor) * m_tensor)
+        self.register_buffer("cos_m", torch.tensor(np.cos(m)))
+        self.register_buffer("sin_m", torch.tensor(np.sin(m)))
+        self.register_buffer("th", torch.tensor(np.cos(np.pi - m)))
+        self.register_buffer("mm", torch.tensor(np.sin(np.pi - m) * m))
 
     def forward(self, embeddings, labels=None):
-        # embeddings: (B, C), weight: (num_classes, C)
         normalized_emb = F.normalize(embeddings, dim=1)
         normalized_w = F.normalize(self.weight, dim=1)
-        cos = F.linear(normalized_emb, normalized_w)  # (B, num_classes)
+        cos_theta = F.linear(normalized_emb, normalized_w)
 
         if labels is None:
-            # inference: return logits scaled
-            return cos * self.s
+            return cos_theta * self.s
 
-        # margin add
-        one_hot = torch.zeros_like(cos)
+        # === THAY ĐỔI: SỬ DỤNG CÔNG THỨC LƯỢNG GIÁC ===
+        one_hot = torch.zeros_like(cos_theta)
         one_hot.scatter_(1, labels.view(-1, 1), 1.0)
-        cos_theta = cos.clamp(-1 + 1e-7, 1 - 1e-7)
-        theta = torch.acos(cos_theta)
-        cos_m_theta = torch.cos(theta + self.m)
-        logits = cos * (1 - one_hot) + cos_m_theta * one_hot
-        logits = logits * self.s
+        
+        sin_theta = torch.sqrt(1.0 - torch.pow(cos_theta, 2) + 1e-7)
+        # Công thức cos(theta + m) = cos(theta)cos(m) - sin(theta)sin(m)
+        cos_theta_m = cos_theta * self.cos_m - sin_theta * self.sin_m
+        
+        # Xử lý trường hợp theta + m > pi
+        cond = cos_theta > self.th
+        cos_theta_m = torch.where(cond, cos_theta_m, cos_theta - self.mm)
+
+        logits = (one_hot * cos_theta_m) + ((1.0 - one_hot) * cos_theta)
+        logits *= self.s
         return logits
 
 # Simple PointNet-like mesh branch
@@ -140,7 +149,7 @@ class Face3DFusionModel(nn.Module):
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(256, 1),
-            nn.Sigmoid()
+            # nn.Sigmoid()
         )
 
     def forward(self, inputs, labels=None):

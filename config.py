@@ -13,7 +13,7 @@ class Config:
     EMBEDDING_DIM = 512
     BATCH_SIZE = 32
     LEARNING_RATE = 1e-4
-    EPOCHS = 60
+    EPOCHS = 30
     NUM_WORKERS = 8
     SEED = 42
     USE_MESH = True
@@ -22,6 +22,9 @@ class Config:
     # ArcFace margin (for high-accuracy face recognition)
     ARC_FACE_S = 30.0
     ARC_FACE_M = 0.3
+
+    # Loss weights
+    SPOOF_LOSS_WEIGHT = 0.25
 
     # Device
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

@@ -16,7 +16,7 @@ class Trainer:
         self.model.to(self.device)
 
         self.criterion_cls = nn.CrossEntropyLoss()
-        self.criterion_bce = nn.BCELoss()
+        self.criterion_bce = nn.BCEWithLogitsLoss()  # nn.BCELoss()
         # optional: triplet
         self.criterion_triplet = nn.TripletMarginLoss(margin=0.2)
 
@@ -33,47 +33,40 @@ class Trainer:
         all_preds, all_labels = [], []
 
         pbar = tqdm(loader, desc=f"Train E{epoch+1}")
-        for batch_idx, (inputs, labels) in enumerate(pbar):
-            # move labels
+        # <--- THAY ĐỔI 1: Nhận thêm 'is_spoof' từ loader
+        for batch_idx, (inputs, labels, is_spoof) in enumerate(pbar):
             labels = labels.to(self.device)
-            # move inputs fields carefully
+            is_spoof = is_spoof.to(self.device) # Di chuyển is_spoof lên device
+
             inputs_cuda = {}
             for k, v in inputs.items():
-                if v is None:
-                    inputs_cuda[k] = None
-                    continue
-                # mesh might be shape (batch_size, M, 3) or a list/tuple; ensure correct
-                inputs_cuda[k] = v.to(self.device)
+                if v is not None:
+                    inputs_cuda[k] = v.to(self.device)
 
             self.optimizer.zero_grad()
             outputs = self.model(inputs_cuda, labels)
-
             logits = outputs['logits']
             loss_cls = self.criterion_cls(logits, labels)
-
             loss = loss_cls
 
-            # anti-spoofing: assume training samples are real -> label=1
             if outputs.get('spoof_score') is not None:
-                real_labels = torch.ones_like(outputs['spoof_score']).to(self.device)
-                loss_spf = self.criterion_bce(outputs['spoof_score'], real_labels)
-                loss += 0.1 * loss_spf
-
-            # optional: add triplet loss on embeddings if batch allows (we use anchor, pos, neg by label sampling)
-            # skip complex batch mining for now
+                spoof_score = outputs['spoof_score']
+                spoof_labels = is_spoof.view_as(spoof_score)
+                loss_spf = self.criterion_bce(spoof_score, spoof_labels)
+                # === THAY ĐỔI: SỬ DỤNG TRỌNG SỐ TỪ CONFIG ===
+                loss += self.config.SPOOF_LOSS_WEIGHT * loss_spf
 
             loss.backward()
             self.optimizer.step()
 
-            # stats
             total_loss += loss.item() * labels.size(0)
             total_cls += loss_cls.item() * labels.size(0)
             total_samples += labels.size(0)
-
+            
             preds = torch.argmax(logits, dim=1).detach().cpu().numpy()
             all_preds.extend(preds.tolist())
             all_labels.extend(labels.detach().cpu().numpy().tolist())
-
+            
             pbar.set_postfix({"loss": f"{loss.item():.4f}", "acc": f"{(accuracy_score(all_labels, all_preds)*100):.2f}%"})
 
         avg_loss = total_loss / total_samples
@@ -82,6 +75,7 @@ class Trainer:
         return avg_loss, avg_cls, acc
 
     @torch.no_grad()
+    @torch.no_grad()
     def validate(self, loader, epoch):
         self.model.eval()
         total_loss = 0.0
@@ -89,17 +83,17 @@ class Trainer:
         all_preds, all_labels = [], []
 
         pbar = tqdm(loader, desc=f"Val E{epoch+1}")
-        for inputs, labels in pbar:
+        # <--- THAY ĐỔI: Nhận thêm 'is_spoof' (dù không dùng trong tính loss validation)
+        for inputs, labels, is_spoof in pbar:
             labels = labels.to(self.device)
             inputs_cuda = {}
             for k, v in inputs.items():
-                if v is None:
-                    inputs_cuda[k] = None
-                    continue
-                inputs_cuda[k] = v.to(self.device)
+                if v is not None:
+                    inputs_cuda[k] = v.to(self.device)
 
             outputs = self.model(inputs_cuda, labels)
             logits = outputs['logits']
+            # Loss trên tập validation chỉ cần tính cho nhiệm vụ chính là classification
             loss = self.criterion_cls(logits, labels)
             total_loss += loss.item() * labels.size(0)
             total_samples += labels.size(0)
