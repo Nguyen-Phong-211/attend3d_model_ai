@@ -7,7 +7,7 @@ from model import create_model
 from trainer import Trainer
 
 def main():
-    print("3D Face Recognition - Training")
+    print("ATTEND 3D - Training")
     print("Device:", config.DEVICE)
 
     if hasattr(config, 'DATA_PATH_REAL'):
