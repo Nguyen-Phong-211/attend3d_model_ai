@@ -1,4 +1,3 @@
-# utils.py - COMPLETE UTILITIES
 import torch
 import cv2
 import numpy as np
@@ -37,18 +36,18 @@ def load_single_sample(folder_path, config=None):
             MESH_MAX_VERTICES = 1024
         config = DefaultConfig()
     
-    # Xác định base name từ files trong folder
+    # Infer base name from folder name
     folder_name = os.path.basename(folder_path)
     dataset_path = os.path.dirname(folder_path)
     
-    # Tìm base name thực tế từ depth file
+    # Find base name by checking depth file
     files_in_folder = os.listdir(folder_path)
     depth_candidates = [f for f in files_in_folder if f.endswith('_depth.jpg')]
     
     if len(depth_candidates) > 0:
         base_name = depth_candidates[0].replace('_depth.jpg', '')
     else:
-        # Fallback: dùng folder name
+        # Fallback: use folder name
         base_name = folder_name
     
     # Setup transforms
@@ -71,12 +70,12 @@ def load_single_sample(folder_path, config=None):
     
     inputs = {}
     
-    # Load RGB (vis file ở NGOÀI folder)
+    # Load RGB (vis file ở parent folder)
     vis_path = os.path.join(dataset_path, f"{base_name}_vis.jpg")
     if not os.path.exists(vis_path):
         vis_path = os.path.join(dataset_path, f"{base_name}_vis_original_size.jpg")
     if not os.path.exists(vis_path):
-        # Thử .png trong folder
+        # Find .png in folder
         vis_path = os.path.join(folder_path, f"{base_name}.png")
     
     if os.path.exists(vis_path):

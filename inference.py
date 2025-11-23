@@ -1,4 +1,3 @@
-# inference.py - Production inference tool
 import torch
 import cv2
 import numpy as np
@@ -12,8 +11,10 @@ import json
 
 class Face3DInference:
     """
-    Inference engine cho Face Recognition + Anti-Spoofing
-    Tương tự Face ID của iPhone và app ngân hàng
+    Class interface to perform inference using a trained 3D face recognition and anti-spoofing model.
+    Args:
+        checkpoint_path (str): Path to the model checkpoint file.
+        device (torch.device, optional): Device to run the model on. Defaults to CPU or
     """
     
     def __init__(self, checkpoint_path, device=None):
@@ -39,11 +40,11 @@ class Face3DInference:
         print(f"Loading model from {checkpoint_path}...")
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         
-        # Lấy num_classes từ checkpoint nếu có
+        # Get number of classes from checkpoint
         if 'num_classes' in checkpoint:
             num_classes = checkpoint['num_classes']
         else:
-            # Ước lượng từ model state
+            # Fallback: infer from model weights
             num_classes = checkpoint['model']['arcface.weight'].shape[0]
         
         self.model = create_model(num_classes, config)
@@ -73,7 +74,7 @@ class Face3DInference:
         ])
     
     def load_sample(self, folder_path):
-        """Load sample từ thư mục"""
+        """ Load sample data from a folder """
         folder_name = os.path.basename(folder_path)
         dataset_path = os.path.dirname(folder_path)
         
@@ -113,7 +114,7 @@ class Face3DInference:
     @torch.no_grad()
     def predict(self, folder_path, return_embedding=False):
         """
-        Dự đoán identity và phát hiện spoofing
+        Predict identity and spoofing status for a single sample.
         
         Returns:
             dict: {
@@ -162,7 +163,7 @@ class Face3DInference:
         return result
     
     def batch_predict(self, folder_paths):
-        """Predict batch các samples"""
+        """ Predict multiple samples in a batch """
         results = []
         for folder_path in folder_paths:
             try:
@@ -175,7 +176,7 @@ class Face3DInference:
     
     def verify_face(self, folder_path1, folder_path2, threshold=0.5):
         """
-        So sánh 2 khuôn mặt có phải cùng người không
+        Verify if two face samples belong to the same person.
         (Face verification)
         
         Returns:

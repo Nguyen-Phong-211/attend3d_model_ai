@@ -1,1 +1,22 @@
-checkpoints/*.pth
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+env/
+
+# Model weights & checkpoints
+checkpoints/
+*.pth
+*.pt
+
+# Logs
+logs/
+runs/
+
+# Data
+data/
+datasets/
+
+# macOS junk
+.DS_Store
