@@ -642,3 +642,36 @@ Validation:
   Time: 4149.5s
 ======================================================================
   ✓ Saved: checkpoint_e2.pth
+
+======================================================================
+Epoch 3/50 (LR: 7.96e-05)
+
+Train:
+  Loss: 29.1255
+  Classification:
+    - Accuracy: 12.21%
+    - Loss: 29.1255
+  Anti-Spoofing:
+    - AUC: 0.9743
+    - Accuracy: 93.89%
+    - APCER (fake→real): 12.70%
+    - BPCER (real→fake): 4.21%
+    - EER: 8.46%
+    - F1: 0.8648
+    - Loss: 0.1629
+
+Validation:
+  Loss: 26.3371
+  Classification:
+    - Accuracy: 19.32%
+    - F1 Score: 0.1210
+  Anti-Spoofing:
+    - AUC: nan
+    - Accuracy: 74.24%
+    - APCER (fake→real): 0.00%
+    - BPCER (real→fake): 25.76%
+    - EER: 12.88%
+    - F1: 0.0000
+  Time: 3895.2s
+======================================================================
+  ✓ Saved: checkpoint_e3.pth
