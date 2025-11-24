@@ -4,6 +4,7 @@ __pycache__/
 
 # Virtual environment
 env/
+venv/
 
 # Model weights & checkpoints
 checkpoints/
