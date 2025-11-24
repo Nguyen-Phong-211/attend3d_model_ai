@@ -12,6 +12,9 @@ from torch.utils.tensorboard import SummaryWriter
 # Import CenterLoss from model.py
 from model import CenterLoss
 
+# Import JSON Logger
+from logger import TrainingLogger
+
 
 class WarmupCosineScheduler:
     """Cosine annealing with linear warmup"""
@@ -43,40 +46,47 @@ class WarmupCosineScheduler:
 
 class Trainer:
     """
-    Enhanced Trainer with improved loss functions including:
-    1. Center Loss
-    2. Depth supervision
-    3. Consistency loss
+    Enhanced Trainer with JSON logging
     """
     
-    def __init__(self, model, config):
+    def __init__(self, model, config, experiment_name=None):
         self.model = model
         self.config = config
         self.device = torch.device(config.DEVICE)
         self.model.to(self.device)
 
+        # TensorBoard
         log_dir = getattr(config, 'LOG_DIR', 'runs/experiment_1')
         self.writer = SummaryWriter(log_dir=log_dir)
         print(f"\nTensorBoard logging to: {log_dir}")
+
+        # JSON Logger - NEW!
+        json_log_dir = getattr(config, 'JSON_LOG_DIR', 'logs/experiments')
+        if experiment_name is None:
+            experiment_name = f"exp_{time.strftime('%Y%m%d_%H%M%S')}"
+        
+        self.json_logger = TrainingLogger(
+            log_dir=os.path.join(json_log_dir, experiment_name),
+            config=config,
+            experiment_name=experiment_name
+        )
 
         # === LOSS FUNCTIONS ===
         self.criterion_cls = nn.CrossEntropyLoss(
             label_smoothing=getattr(config, 'LABEL_SMOOTHING', 0.1)
         )
         self.criterion_bce = nn.BCEWithLogitsLoss()
-        self.criterion_mse = nn.MSELoss()  # for depth supervision
+        self.criterion_mse = nn.MSELoss()
         
         # CENTER LOSS
         self.use_center_loss = getattr(config, 'USE_CENTER_LOSS', True)
         if self.use_center_loss:
-            # Get num_classes from model
             num_classes = model.num_classes
             self.criterion_center = CenterLoss(
                 num_classes, 
                 config.EMBEDDING_DIM, 
                 self.device
             )
-            # Optimizer for center loss
             self.optimizer_center = optim.SGD(
                 self.criterion_center.parameters(), 
                 lr=0.5
@@ -190,14 +200,14 @@ class Trainer:
             'precision': precision,
             'recall': recall,
             'f1': f1,
-            'tp': tp,
-            'tn': tn,
-            'fp': fp,
-            'fn': fn
+            'tp': int(tp),
+            'tn': int(tn),
+            'fp': int(fp),
+            'fn': int(fn)
         }
 
     def train_epoch(self, loader, epoch):
-        """Train for one epoch với IMPROVED LOSSES"""
+        """Train for one epoch"""
         self.model.train()
         
         total_loss = 0.0
@@ -323,15 +333,19 @@ class Trainer:
         }
     
     def _compute_loss(self, inputs_cuda, labels, is_spoof):
-        """
-        IMPROVED LOSS COMPUTATION
-        """
+        """IMPROVED LOSS COMPUTATION"""
         outputs = self.model(inputs_cuda, labels)
         logits = outputs['logits']
         embeddings = outputs['embeddings']
         
-        # 1. Classification Loss
-        loss_cls = self.criterion_cls(logits, labels)
+        # 1. Classification Loss - ONLY FOR REAL
+        real_mask = (is_spoof == 0)
+
+        if real_mask.sum() > 0:
+            loss_cls = self.criterion_cls(logits[real_mask], labels[real_mask])
+        else:
+            loss_cls = torch.tensor(0.0).to(self.device)
+        
         total_loss = loss_cls
         
         # 2. Anti-Spoofing Loss
@@ -347,7 +361,6 @@ class Trainer:
             if 'depth_pred' in outputs and 'depth' in inputs_cuda:
                 real_mask = (is_spoof == 0).float()
                 if real_mask.sum() > 0:
-                    # Downsample ground truth depth to 32x32
                     depth_gt = torch.nn.functional.interpolate(
                         inputs_cuda['depth'], 
                         size=(32, 32), 
@@ -356,7 +369,6 @@ class Trainer:
                     )
                     depth_pred = outputs['depth_pred']
                     
-                    # Compute depth loss only for real samples
                     loss_depth = self.criterion_mse(
                         depth_pred * real_mask.view(-1, 1, 1, 1),
                         depth_gt * real_mask.view(-1, 1, 1, 1)
@@ -368,11 +380,14 @@ class Trainer:
             spoof_weight = getattr(self.config, 'SPOOF_LOSS_WEIGHT', 1.0)
             total_loss = total_loss + spoof_weight * loss_spf
         
-        # 4. Center Loss
+        # 4. Center Loss - ONLY FOR REAL
         loss_center = torch.tensor(0.0).to(self.device)
-        if self.use_center_loss:
-            loss_center = self.criterion_center(embeddings, labels)
-            center_weight = getattr(self.config, 'CENTER_LOSS_WEIGHT', 0.001)
+        if self.use_center_loss and real_mask.sum() > 0:
+            loss_center = self.criterion_center(
+                embeddings[real_mask], 
+                labels[real_mask]
+            )
+            center_weight = getattr(self.config, 'CENTER_LOSS_WEIGHT', 0.000001)
             total_loss = total_loss + center_weight * loss_center
         
         return {
@@ -505,7 +520,7 @@ class Trainer:
         print(f"  ✓ Saved: {fname}")
 
     def train(self, train_loader, val_loader, num_classes):
-        """Full training loop"""
+        """Full training loop with JSON logging"""
         print("\n" + "="*70)
         print(f"Starting Training")
         print(f"  Epochs: {self.config.EPOCHS}")
@@ -520,13 +535,25 @@ class Trainer:
             val_metrics = self.validate(val_loader, epoch)
             
             current_lr = self.scheduler.step(epoch)
+            epoch_duration = time.time() - epoch_start
+            
+            # TensorBoard
             self.writer.add_scalar('LearningRate', current_lr, epoch)
+            
+            # JSON Logger - Log this epoch
+            self.json_logger.log_epoch(
+                epoch=epoch,
+                train_metrics=train_metrics,
+                val_metrics=val_metrics,
+                lr=current_lr,
+                duration=epoch_duration
+            )
             
             print("\n" + "="*70)
             print(f"Epoch {epoch+1}/{self.config.EPOCHS} (LR: {current_lr:.2e})")
             self.print_metrics("Train", train_metrics)
             self.print_metrics("Validation", val_metrics)
-            print(f"  Time: {time.time() - epoch_start:.1f}s")
+            print(f"  Time: {epoch_duration:.1f}s")
             print("="*70)
             
             if (epoch + 1) % self.config.SAVE_EVERY == 0:
@@ -549,8 +576,13 @@ class Trainer:
                 print(f"  ★ New best spoof AUC: {current_spoof_auc:.4f}")
             
             if self.early_stop_counter >= self.patience:
-                print(f"\n⚠ Early stopping triggered after {epoch+1} epochs")
+                print(f"\n⚠️  Early stopping triggered after {epoch+1} epochs")
+                self.json_logger.log_early_stop(epoch, "Patience exceeded")
                 break
+        
+        # Finalize logging
+        self.json_logger.finalize(total_epochs_completed=epoch+1)
+        self.json_logger.print_summary()
         
         self.writer.close()
         

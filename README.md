@@ -57,28 +57,26 @@ This project is developed by [Your team/individual name] with the goal of [gener
 
     Structures's DATA FAKE:
     DATA_ROOT/FAKE_RENDER/
-        FAKE_DATASET/
-            easy_1_1110/
-                easy_1_1110_depth.jpg, 
-                easy_1_1110_detail.obj, 
-                easy_1_1110_normals.png, 
-                easy_1_1110.mtl, 
-                easy_1_1110.obj, 
-                easy_1_1110.png
-            easy_1_1110_vis_original_size.jpg, 
-            easy_1_1110_vis.jpg
+        easy_1_1110/
+            easy_1_1110_depth.jpg, 
+            easy_1_1110_detail.obj, 
+            easy_1_1110_normals.png, 
+            easy_1_1110.mtl, 
+            easy_1_1110.obj, 
+            easy_1_1110.png
+        easy_1_1110_vis_original_size.jpg, 
+        easy_1_1110_vis.jpg
 
     DATA_ROOT/render_3d/
-        RENDER_DATASET/
-            original_000/
-                frame_000001_depth.jpg, 
-                frame_000001_detail.obj, 
-                frame_000001_normals.png, 
-                frame_000001.mtl, 
-                frame_000001.obj, 
-                frame_000001.png
-            frame_000001_vis_original_size.jpg, 
-            frame_000001_vis.jpg
+        original_000/
+            frame_000001_depth.jpg, 
+            frame_000001_detail.obj, 
+            frame_000001_normals.png, 
+            frame_000001.mtl, 
+            frame_000001.obj, 
+            frame_000001.png
+        frame_000001_vis_original_size.jpg, 
+        frame_000001_vis.jpg
 </pre>
 
 ## Usage

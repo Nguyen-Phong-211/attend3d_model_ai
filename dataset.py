@@ -79,7 +79,7 @@ class Face3DDataset(Dataset):
                     saturation=getattr(config, 'AUG_COLOR_JITTER', 0.2),
                     hue=0.05
                 ),
-                transforms.RandomHorizontalFlip(p=0.5),  # Horizontal flip
+                transforms.RandomHorizontalFlip(p=0.5),
                 transforms.ToTensor(),
             ])
             
@@ -139,14 +139,15 @@ class Face3DDataset(Dataset):
         self._prepare_index()
 
     def _prepare_index(self):
-        """ No change needed here """
         if not self.data_root:
             print("No data_root provided, skipping folder scan.")
             return
 
         candidate_folders = []
         
-        items = os.listdir(self.data_root)
+        items = [item for item in os.listdir(self.data_root) 
+            if not item.startswith('.') and not item.startswith('_')]
+
         first_item_path = os.path.join(self.data_root, items[0]) if items else None
         
         if first_item_path and os.path.isdir(first_item_path):
@@ -192,30 +193,49 @@ class Face3DDataset(Dataset):
             obj_path = os.path.join(folder_path, f"{base}.obj")
             png_path = os.path.join(folder_path, f"{base}.png")
             
-            vis_path = os.path.join(dataset_path, f"{base}_vis.jpg")
-            if not os.path.exists(vis_path):
-                alt_vis = os.path.join(dataset_path, f"{base}_vis_original_size.jpg")
-                if os.path.exists(alt_vis):
-                    vis_path = alt_vis
-                elif os.path.exists(png_path):
-                    vis_path = png_path
-                else:
-                    fallback = os.path.join(dataset_path, f"{folder_name}_vis.jpg")
-                    if os.path.exists(fallback):
-                        vis_path = fallback
-                    else:
-                        print(f"[WARN] Cannot find RGB for {base}")
-                        continue
+            # 🔧 IMPROVED RGB LOADING LOGIC
+            vis_candidates = [
+                # 1. Standard vis.jpg outside folder (REAL dataset style)
+                os.path.join(dataset_path, f"{base}_vis.jpg"),
+                os.path.join(dataset_path, f"{base}_vis_original_size.jpg"),
+                
+                # 2. PNG inside folder (FAKE_RENDER style)
+                png_path,
+                
+                # 3. Try with folder name (for render_3d mismatch)
+                os.path.join(dataset_path, f"{folder_name}_vis.jpg"),
+                os.path.join(dataset_path, f"{folder_name}_vis_original_size.jpg"),
+                
+                # 4. Try to find ANY _vis.jpg in parent folder
+                *[os.path.join(dataset_path, f) for f in os.listdir(dataset_path) 
+                if f.endswith('_vis.jpg') or f.endswith('_vis_original_size.jpg')],
+            ]
+            
+            vis_path = None
+            for candidate in vis_candidates:
+                if candidate and os.path.exists(candidate):
+                    vis_path = candidate
+                    break
+            
+            if vis_path is None:
+                print(f"[WARN] Cannot find RGB for {base} (folder: {folder_name})")
+                print(f"  Tried:")
+                for c in vis_candidates[:5]:  # Print first 5 attempts
+                    print(f"    - {c}")
+                continue
 
             if not any([os.path.exists(p) for p in [depth_path, normals_path, obj_path]]):
                 continue
 
+            # Identity extraction logic
             parts = base.split('_')
             if parts[0] in ['easy','hard']:
                 person_key = f"{parts[0]}_{parts[1]}"
             elif 'spoof' in parts:
                 idx = parts.index('spoof')
                 person_key = f"spoof_{parts[idx+1]}" if idx+1<len(parts) else 'spoof_unknown'
+            elif parts[0] == 'frame':  # Handle render_3d naming
+                person_key = folder_name  # Use folder name as identity
             else:
                 person_key = parts[1] if len(parts)>1 else base
             
@@ -323,7 +343,10 @@ class Face3DDataset(Dataset):
 
 
 def get_dataloaders(config, split=0.8):
-    """ Create stratified train/val dataloaders """
+    """
+    FIXED: Stratified split by SAMPLE-LEVEL for fake data (not identity-level)
+    This ensures fake samples appear in both train and validation sets.
+    """
     print('='*60)
     print('Loading datasets...')
 
@@ -333,14 +356,16 @@ def get_dataloaders(config, split=0.8):
     for fp in config.DATA_PATHS_FAKE:
         fake_ds = Face3DDataset(fp, config, mode='train', is_fake=True)
         for s in fake_ds.samples:
-            sub_id = s['subject_id']
-            if sub_id not in fake_label_map:
-                fake_label_map[sub_id] = len(real_ds.label_map)+len(fake_label_map)
-            s['label'] = fake_label_map[sub_id]
+            # sub_id = s['subject_id']
+            # if sub_id not in fake_label_map:
+            #     fake_label_map[sub_id] = len(real_ds.label_map)+len(fake_label_map)
+            # s['label'] = fake_label_map[sub_id]
+            s['label'] = 0  # ALL fake samples share the same label
             fake_samples.append(s)
 
     all_samples = real_ds.samples + fake_samples
-    all_label_map = {**real_ds.label_map, **fake_label_map}
+    # all_label_map = {**real_ds.label_map, **fake_label_map}
+    all_label_map = real_ds.label_map  # Only real identities matter for classification
 
     print(f"Total samples = {len(all_samples)}, Total identities = {len(all_label_map)}")
     
@@ -355,6 +380,7 @@ def get_dataloaders(config, split=0.8):
     
     rng = random.Random(config.SEED)
     
+    # === REAL: Stratified by identity (unchanged) ===
     real_id_map = defaultdict(list)
     for s in real_samples:
         real_id_map[s['label']].append(s)
@@ -366,26 +392,42 @@ def get_dataloaders(config, split=0.8):
         train_real.extend(samples_per_id[:cut])
         val_real.extend(samples_per_id[cut:])
     
-    fake_id_map = defaultdict(list)
-    for s in fake_samples_list:
-        fake_id_map[s['label']].append(s)
+    # === FAKE: SIMPLE RANDOM SPLIT (not by identity!) ===
+    # This is the KEY FIX: split fake samples directly, not by identity
+    rng.shuffle(fake_samples_list)
+    cut_fake = int(split * len(fake_samples_list))
+    train_fake = fake_samples_list[:cut_fake]
+    val_fake = fake_samples_list[cut_fake:]
     
-    train_fake, val_fake = [], []
-    for samples_per_id in fake_id_map.values():
-        rng.shuffle(samples_per_id)
-        cut = max(1, int(split * len(samples_per_id)))
-        train_fake.extend(samples_per_id[:cut])
-        val_fake.extend(samples_per_id[cut:])
-    
+    # Combine
     train_samples = train_real + train_fake
     val_samples = val_real + val_fake
     
     rng.shuffle(train_samples)
     rng.shuffle(val_samples)
     
-    print(f"\n Stratified Split:")
+    print(f"\n✅ Stratified Split (FIXED):")
     print(f"  Train: {len(train_samples)} ({len(train_real)} real + {len(train_fake)} fake)")
     print(f"  Val:   {len(val_samples)} ({len(val_real)} real + {len(val_fake)} fake)")
+    
+    # Sanity check
+    if len(val_fake) == 0:
+        print("\n⚠️  WARNING: Still no fake samples in validation!")
+        print("   Forcing at least 10% of fake samples to validation...")
+        
+        # Force at least 10% fake to validation
+        min_val_fake = max(10, int(0.1 * len(fake_samples_list)))
+        train_fake = fake_samples_list[:-min_val_fake]
+        val_fake = fake_samples_list[-min_val_fake:]
+        
+        train_samples = train_real + train_fake
+        val_samples = val_real + val_fake
+        
+        rng.shuffle(train_samples)
+        rng.shuffle(val_samples)
+        
+        print(f"  NEW Train: {len(train_samples)} ({len(train_real)} real + {len(train_fake)} fake)")
+        print(f"  NEW Val:   {len(val_samples)} ({len(val_real)} real + {len(val_fake)} fake)")
     
     train_ds = Face3DDataset('', config, mode='train', samples=train_samples, label_map=all_label_map)
     val_ds = Face3DDataset('', config, mode='val', samples=val_samples, label_map=all_label_map)
