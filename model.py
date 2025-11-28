@@ -258,6 +258,12 @@ class SmallBackbone(nn.Module):
         elif arch == 'resnet34':
             base = models.resnet34(pretrained=pretrained)
             feat_dim = 512
+        elif arch == 'resnet50':
+            base = models.resnet50(pretrained=pretrained)
+            feat_dim = 2048
+        elif arch == 'resnet101': 
+            base = models.resnet101(pretrained=pretrained)
+            feat_dim = 2048
         else:
             raise ValueError(f"Unknown architecture: {arch}")
         
@@ -266,7 +272,10 @@ class SmallBackbone(nn.Module):
         
         if channels == 1 and pretrained:
             with torch.no_grad():
-                orig_weight = models.resnet18(pretrained=True).conv1.weight
+                if arch in ['resnet18', 'resnet34']:
+                    orig_weight = models.resnet18(pretrained=True).conv1.weight
+                else:  # resnet50/101
+                    orig_weight = models.resnet50(pretrained=True).conv1.weight
                 base.conv1.weight[:, 0, :, :] = orig_weight.mean(dim=1)
         
         base.fc = nn.Sequential(
@@ -279,7 +288,6 @@ class SmallBackbone(nn.Module):
 
     def forward(self, x):
         return self.model(x)
-
 
 # ============================================================================
 # ATTENTION MODULE
@@ -345,7 +353,7 @@ class Face3DFusionModel(nn.Module):
         # === MODALITY BRANCHES ===
         self.rgb = RGBBackbone(
             out_dim=emb, 
-            arch=getattr(config, 'RGB_ARCH', 'resnet50'),
+            arch=getattr(config, 'RGB_ARCH', 'resnet101'),
             pretrained=True,
             use_checkpoint=use_checkpoint
         )
@@ -353,13 +361,13 @@ class Face3DFusionModel(nn.Module):
         self.depth = SmallBackbone(
             channels=1, 
             out_dim=emb,
-            arch=getattr(config, 'DEPTH_ARCH', 'resnet18')
+            arch=getattr(config, 'DEPTH_ARCH', 'resnet50')
         )
         
         self.normals = SmallBackbone(
             channels=3, 
             out_dim=emb,
-            arch=getattr(config, 'NORMAL_ARCH', 'resnet18')
+            arch=getattr(config, 'NORMAL_ARCH', 'resnet50')
         )
         
         self.mesh = MeshBranch(
@@ -382,12 +390,12 @@ class Face3DFusionModel(nn.Module):
             nn.Linear(fuse_dim, emb * 2),
             nn.BatchNorm1d(emb * 2),
             nn.ReLU(),
-            nn.Dropout(0.4),  # Increase dropout
+            nn.Dropout(0.5),
             
             nn.Linear(emb * 2, emb),
             nn.BatchNorm1d(emb),
             nn.ReLU(),
-            nn.Dropout(0.3),  # Increase dropout
+            nn.Dropout(0.4),
             
             nn.Linear(emb, emb),
             nn.BatchNorm1d(emb)
@@ -443,6 +451,7 @@ class Face3DFusionModel(nn.Module):
             fused = self.fusion(fused)
         
         embeddings = F.normalize(fused, p=2, dim=1)
+        embeddings = F.dropout(embeddings, p=0.2, training=self.training)
         
         # === TASK OUTPUTS ===
         if labels is not None:

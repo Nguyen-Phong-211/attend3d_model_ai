@@ -4,10 +4,11 @@ import os
 class Config:
     
     # ===== DATA PATHS =====
-    DATA_PATH_REAL = "/Volumes/WD 500GB EL/DATA_ROOT/REAL"
+    DATA_PATH_REAL = "D://DATA_ROOT//REAL"
+
     DATA_PATHS_FAKE = [
-        "/Volumes/WD 500GB EL/DATA_ROOT/FAKE_RENDER",
-        "/Volumes/WD 500GB EL/DATA_ROOT/render_3d"
+        "D://DATA_ROOT//render_3d",
+        "D://DATA_ROOT//FAKE_RENDER"
     ]
     
     # ===== MODEL ARCHITECTURE =====
@@ -18,30 +19,31 @@ class Config:
     USE_ATTENTION_FUSION = True
     
     # Model architectures
-    RGB_ARCH = 'resnet50'
-    DEPTH_ARCH = 'resnet18'
-    NORMAL_ARCH = 'resnet18'
+    RGB_ARCH = 'resnet50' # -> resnet50
+    DEPTH_ARCH = 'resnet34' # -> resnet34
+    NORMAL_ARCH = 'resnet34' # -> resnet34
     
     # ===== TRAINING HYPERPARAMETERS - CRITICAL FIXES =====
-    BATCH_SIZE = 32
-    LEARNING_RATE = 1e-4  # 🔧 FIX 1: Giảm learning rate
-    WEIGHT_DECAY = 1e-4
-    EPOCHS = 120
+    BATCH_SIZE = 48
+    LEARNING_RATE = 5e-5
+    WEIGHT_DECAY = 5e-5
+    EPOCHS = 70
     NUM_WORKERS = 4
     SEED = 42
     
     # ===== OPTIMIZER & SCHEDULER =====
-    SCHEDULER = 'cosine'
-    WARMUP_EPOCHS = 10  # 🔧 FIX 2: Tăng warmup epochs
-    MIN_LR = 1e-6
+    SCHEDULER = 'plateau'
+    WARMUP_EPOCHS = 10
+    MIN_LR = 1e-7
+    PATIENCE_SCHEDULER = 5
     
     # ===== MIXED PRECISION & GRADIENT =====
     USE_AMP = True
-    MAX_GRAD_NORM = 1.0  # 🔧 FIX 3: Giảm gradient clipping
+    MAX_GRAD_NORM = 1.0
     USE_GRADIENT_CHECKPOINT = False
     
     # ===== EARLY STOPPING =====
-    PATIENCE = 25
+    PATIENCE = 35
     
     # ===== 3D MESH SETTINGS =====
     USE_MESH = True
@@ -49,30 +51,30 @@ class Config:
     USE_FPS = True
     
     # ===== ARCFACE SETTINGS - MORE RELAXED =====
-    ARC_FACE_S = 30  # 🔧 FIX 4: Giảm scale factor
-    ARC_FACE_M = 0.3   # 🔧 FIX 5: Giảm margin
-    ARC_EASY_MARGIN = True
+    ARC_FACE_S = 70
+    ARC_FACE_M = 0.35
+    ARC_EASY_MARGIN = False
     
     # ===== LOSS WEIGHTS - REBALANCED =====
-    SPOOF_LOSS_WEIGHT = 0.1  # 🔧 FIX 6: GIẢM MẠNH spoof weight
+    SPOOF_LOSS_WEIGHT = 0.05
     
     # CENTER LOSS
-    USE_CENTER_LOSS = False
-    CENTER_LOSS_WEIGHT = 0.000001
+    USE_CENTER_LOSS = True
+    CENTER_LOSS_WEIGHT = 5e-5
     
     # DEPTH AUXILIARY
-    DEPTH_AUX_WEIGHT = 0.02  # 🔧 FIX 7: Giảm depth weight
+    DEPTH_AUX_WEIGHT = 0.03
     
     # ===== AUGMENTATION - LIGHTER =====
     USE_AUGMENTATION = True
-    AUG_ROTATION = 5  # 🔧 FIX 8: Giảm augmentation
+    AUG_ROTATION = 5
     AUG_COLOR_JITTER = 0.1
     AUG_RANDOM_BRIGHTNESS = 0.1
     AUG_RANDOM_CONTRAST = 0.1
     AUG_GAUSSIAN_NOISE = 0.005
     AUG_MOTION_BLUR = False
-    AUG_CUTOUT_PROB = 0.1
-    AUG_CUTOUT_SIZE = 0.05
+    AUG_CUTOUT_PROB = 0.15
+    AUG_CUTOUT_SIZE = 0.12
     
     # ===== DEVICE =====
     if torch.cuda.is_available():
@@ -83,7 +85,7 @@ class Config:
         DEVICE = "cpu"
     
     # ===== CHECKPOINTING =====
-    CHECKPOINT_DIR = "checkpoints"  # New version
+    CHECKPOINT_DIR = "checkpoints"
     CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, "best_model.pth")
     
     # ===== LOGGING =====
@@ -100,6 +102,6 @@ class Config:
     SPOOF_THRESHOLD = 0.5
     
     # ===== LABEL SMOOTHING =====
-    LABEL_SMOOTHING = 0.1  # 🔧 FIX 9: Tăng label smoothing
+    LABEL_SMOOTHING = 0.02
 
 config = Config()

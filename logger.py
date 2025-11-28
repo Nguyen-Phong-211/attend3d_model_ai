@@ -134,7 +134,7 @@ class TrainingLogger:
             'reason': reason,
             'timestamp': datetime.now().isoformat()
         }
-        print(f"⚠️  Early stopping logged: {reason} at epoch {epoch+1}")
+        print(f"  Early stopping logged: {reason} at epoch {epoch+1}")
     
     def finalize(self, total_epochs_completed):
         """

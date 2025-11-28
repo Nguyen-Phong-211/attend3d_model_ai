@@ -8,6 +8,7 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, confusion_m
 import time
 import math
 from torch.utils.tensorboard import SummaryWriter
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 # Import CenterLoss from model.py
 from model import CenterLoss
@@ -43,11 +44,8 @@ class WarmupCosineScheduler:
         
         return lr
 
-
 class Trainer:
-    """
-    Enhanced Trainer with JSON logging
-    """
+    """Enhanced Trainer with JSON logging"""
     
     def __init__(self, model, config, experiment_name=None):
         self.model = model
@@ -60,7 +58,7 @@ class Trainer:
         self.writer = SummaryWriter(log_dir=log_dir)
         print(f"\nTensorBoard logging to: {log_dir}")
 
-        # JSON Logger - NEW!
+        # JSON Logger
         json_log_dir = getattr(config, 'JSON_LOG_DIR', 'logs/experiments')
         if experiment_name is None:
             experiment_name = f"exp_{time.strftime('%Y%m%d_%H%M%S')}"
@@ -73,12 +71,12 @@ class Trainer:
 
         # === LOSS FUNCTIONS ===
         self.criterion_cls = nn.CrossEntropyLoss(
-            label_smoothing=getattr(config, 'LABEL_SMOOTHING', 0.1)
+            label_smoothing=getattr(config, 'LABEL_SMOOTHING', 0.02)
         )
         self.criterion_bce = nn.BCEWithLogitsLoss()
         self.criterion_mse = nn.MSELoss()
         
-        # CENTER LOSS
+        # === CENTER LOSS ===
         self.use_center_loss = getattr(config, 'USE_CENTER_LOSS', True)
         if self.use_center_loss:
             num_classes = model.num_classes
@@ -89,34 +87,58 @@ class Trainer:
             )
             self.optimizer_center = optim.SGD(
                 self.criterion_center.parameters(), 
-                lr=0.5
+                lr=0.5,
+                momentum=0.9
             )
-            print(f"\nUsing Center Loss enabled")
+            self.scheduler_center = torch.optim.lr_scheduler.StepLR(
+                self.optimizer_center, 
+                step_size=10,
+                gamma=0.9
+            )
+            print(f"\nCenter Loss: ENABLED (with scheduler)")
         
         # === OPTIMIZER ===
+        weight_decay = getattr(self.config, 'WEIGHT_DECAY', 5e-5)  # ✅ MẶC ĐỊNH 5e-5
+        
         self.optimizer = optim.AdamW(
             self.model.parameters(), 
             lr=config.LEARNING_RATE,
-            weight_decay=getattr(config, 'WEIGHT_DECAY', 5e-4),
+            weight_decay=weight_decay,  # ✅ ĐÚNG
             betas=(0.9, 0.999)
         )
         
         # === SCHEDULER ===
-        warmup_epochs = getattr(config, 'WARMUP_EPOCHS', 5)
-        min_lr = getattr(config, 'MIN_LR', 1e-6)
+        self.scheduler_type = getattr(config, 'SCHEDULER', 'plateau')
         
-        self.scheduler = WarmupCosineScheduler(
-            self.optimizer,
-            warmup_epochs=warmup_epochs,
-            max_epochs=config.EPOCHS,
-            base_lr=config.LEARNING_RATE,
-            min_lr=min_lr
-        )
-        
-        print(f"\nScheduler: Warmup Cosine")
-        print(f"  Warmup epochs: {warmup_epochs}")
-        print(f"  Base LR: {config.LEARNING_RATE:.2e}")
-        print(f"  Min LR: {min_lr:.2e}")
+        if self.scheduler_type == 'plateau':
+            self.scheduler = ReduceLROnPlateau(
+                self.optimizer,
+                mode='max',
+                factor=0.5,
+                patience=getattr(config, 'PATIENCE_SCHEDULER', 5),
+                min_lr=getattr(config, 'MIN_LR', 1e-7),
+                verbose=True
+            )
+            print(f"\nScheduler: ReduceLROnPlateau")
+            print(f"  Mode: max (monitor val accuracy)")
+            print(f"  Patience: {getattr(config, 'PATIENCE_SCHEDULER', 5)}")
+            print(f"  Factor: 0.5")
+            print(f"  Min LR: {getattr(config, 'MIN_LR', 1e-7):.2e}")
+        else:
+            warmup_epochs = getattr(config, 'WARMUP_EPOCHS', 10)
+            min_lr = getattr(config, 'MIN_LR', 1e-7)
+            
+            self.scheduler = WarmupCosineScheduler(
+                self.optimizer,
+                warmup_epochs=warmup_epochs,
+                max_epochs=config.EPOCHS,
+                base_lr=config.LEARNING_RATE,
+                min_lr=min_lr
+            )
+            print(f"\nScheduler: Warmup Cosine")
+            print(f"  Warmup epochs: {warmup_epochs}")
+            print(f"  Base LR: {config.LEARNING_RATE:.2e}")
+            print(f"  Min LR: {min_lr:.2e}")
         
         # === MIXED PRECISION ===
         self.use_amp = getattr(config, 'USE_AMP', False) and config.DEVICE == 'cuda'
@@ -127,19 +149,20 @@ class Trainer:
         self.max_grad_norm = getattr(config, 'MAX_GRAD_NORM', 1.0)
         
         # === EARLY STOPPING ===
-        self.patience = getattr(config, 'PATIENCE', 15)
+        self.patience = getattr(config, 'PATIENCE', 35)
         self.early_stop_counter = 0
         self.best_val_acc = 0.0
         self.best_spoof_auc = 0.0
+        self.best_combined_score = 0.0
         
         os.makedirs(config.CHECKPOINT_DIR, exist_ok=True)
         
         print(f"\nTrainer initialized:")
         print(f"  Device: {self.device}")
-        print(f"  Optimizer: AdamW (lr={config.LEARNING_RATE:.2e})")
+        print(f"  Optimizer: AdamW (lr={config.LEARNING_RATE:.2e}, wd={weight_decay:.2e})")
         print(f"  Mixed Precision: {self.use_amp}")
         print(f"  Gradient Clipping: {self.max_grad_norm}")
-        print(f"  Early Stopping: {self.patience}")
+        print(f"  Early Stopping Patience: {self.patience}")
 
     def compute_spoofing_metrics(self, spoof_scores, spoof_labels, threshold=0.5):
         """ Compute spoofing metrics """
@@ -235,7 +258,7 @@ class Trainer:
             
             # === FORWARD ===
             if self.use_amp:
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast("cuda"):
                     loss = self._compute_loss(inputs_cuda, labels, is_spoof)
                 
                 self.optimizer.zero_grad()
@@ -334,68 +357,85 @@ class Trainer:
     
     def _compute_loss(self, inputs_cuda, labels, is_spoof):
         """IMPROVED LOSS COMPUTATION"""
+
+        # --- FIX SHAPE & TYPE OF SPOOF LABELS ---
+        # is_spoof may come as (B,1), float → convert to (B,) float
+        is_spoof = is_spoof.view(-1).float().to(self.device)
+
+        # boolean masks (B,)
+        real_mask = (is_spoof == 0)
+        fake_mask = (is_spoof == 1)
+        # -----------------------------------------
+
         outputs = self.model(inputs_cuda, labels)
         logits = outputs['logits']
         embeddings = outputs['embeddings']
-        
-        # 1. Classification Loss - ONLY FOR REAL
-        real_mask = (is_spoof == 0)
 
+        # 1. Classification Loss - ONLY FOR REAL SAMPLES
         if real_mask.sum() > 0:
-            loss_cls = self.criterion_cls(logits[real_mask], labels[real_mask])
+            loss_cls = self.criterion_cls(
+                logits[real_mask],
+                labels[real_mask]
+            )
         else:
-            loss_cls = torch.tensor(0.0).to(self.device)
-        
+            loss_cls = torch.tensor(0.0, device=self.device)
+
         total_loss = loss_cls
-        
+
         # 2. Anti-Spoofing Loss
         spoof_score = outputs.get('spoof_score')
-        loss_spf = torch.tensor(0.0).to(self.device)
-        
+        loss_spf = torch.tensor(0.0, device=self.device)
+
         if spoof_score is not None:
-            spoof_labels = is_spoof.view_as(spoof_score)
+            # spoof_score (B,1) → labels must be same shape
+            spoof_labels = is_spoof.unsqueeze(1)  # (B,1)
             loss_spf = self.criterion_bce(spoof_score, spoof_labels)
-            
-            # 3. Depth Auxiliary Loss (only for REAL faces)
-            loss_depth = torch.tensor(0.0).to(self.device)
+
+            # 3. Depth Auxiliary Loss (only real faces)
+            loss_depth = torch.tensor(0.0, device=self.device)
+
             if 'depth_pred' in outputs and 'depth' in inputs_cuda:
-                real_mask = (is_spoof == 0).float()
                 if real_mask.sum() > 0:
                     depth_gt = torch.nn.functional.interpolate(
-                        inputs_cuda['depth'], 
-                        size=(32, 32), 
+                        inputs_cuda['depth'],
+                        size=(32, 32),
                         mode='bilinear',
                         align_corners=False
                     )
+
                     depth_pred = outputs['depth_pred']
-                    
+
+                    rm = real_mask.view(-1, 1, 1, 1).float()
+
                     loss_depth = self.criterion_mse(
-                        depth_pred * real_mask.view(-1, 1, 1, 1),
-                        depth_gt * real_mask.view(-1, 1, 1, 1)
+                        depth_pred * rm,
+                        depth_gt * rm
                     )
-                    
+
                     depth_weight = getattr(self.config, 'DEPTH_AUX_WEIGHT', 0.1)
-                    loss_spf = loss_spf + depth_weight * loss_depth
-            
+                    loss_spf += depth_weight * loss_depth
+
             spoof_weight = getattr(self.config, 'SPOOF_LOSS_WEIGHT', 1.0)
-            total_loss = total_loss + spoof_weight * loss_spf
-        
-        # 4. Center Loss - ONLY FOR REAL
-        loss_center = torch.tensor(0.0).to(self.device)
+            total_loss += spoof_weight * loss_spf
+
+        # 4. Center Loss - ONLY REAL
+        loss_center = torch.tensor(0.0, device=self.device)
+
         if self.use_center_loss and real_mask.sum() > 0:
             loss_center = self.criterion_center(
-                embeddings[real_mask], 
+                embeddings[real_mask],
                 labels[real_mask]
             )
-            center_weight = getattr(self.config, 'CENTER_LOSS_WEIGHT', 0.000001)
-            total_loss = total_loss + center_weight * loss_center
-        
+
+            c_weight = getattr(self.config, 'CENTER_LOSS_WEIGHT', 0.000001)
+            total_loss += c_weight * loss_center
+
         return {
             'total': total_loss,
             'cls': loss_cls,
             'spoof': loss_spf,
             'center': loss_center,
-            'depth': loss_depth,
+            'depth': loss_depth if 'depth' in inputs_cuda else 0.0,
             'logits': logits,
             'spoof_score': spoof_score
         }
@@ -533,8 +573,17 @@ class Trainer:
             
             train_metrics = self.train_epoch(train_loader, epoch)
             val_metrics = self.validate(val_loader, epoch)
+
+            if self.scheduler_type == 'plateau':
+                self.scheduler.step(val_metrics['cls_acc'])
+                current_lr = self.optimizer.param_groups[0]['lr']
+            else:
+                current_lr = self.scheduler.step(epoch)
+
+            if self.use_center_loss and hasattr(self, 'scheduler_center'):
+                self.scheduler_center.step()
             
-            current_lr = self.scheduler.step(epoch)
+            # current_lr = self.scheduler.step(epoch)
             epoch_duration = time.time() - epoch_start
             
             # TensorBoard
@@ -556,27 +605,32 @@ class Trainer:
             print(f"  Time: {epoch_duration:.1f}s")
             print("="*70)
             
-            if (epoch + 1) % self.config.SAVE_EVERY == 0:
-                self.save_checkpoint(epoch, val_metrics)
-            
             current_val_acc = val_metrics['cls_acc']
             current_spoof_auc = val_metrics['spoof_metrics']['auc'] if val_metrics.get('spoof_metrics') else 0
-            
-            if current_val_acc > self.best_val_acc:
+
+            combined_score = 0.7 * current_val_acc + 0.3 * (current_spoof_auc * 100)
+
+            epoch_filename = f"attend3d_acc{current_val_acc:.2f}_epoch{epoch+1:03d}.pth"
+            self.save_checkpoint(epoch, val_metrics, fname=epoch_filename)
+            print(f"====> Saved: {epoch_filename}")
+                        
+            if combined_score > self.best_combined_score:
+                self.best_combined_score = combined_score
                 self.best_val_acc = current_val_acc
-                self.save_checkpoint(epoch, val_metrics, fname='best_acc.pth')
-                print(f"  ★ New best accuracy: {current_val_acc:.2f}%")
+                self.best_spoof_auc = current_spoof_auc
+                self.save_checkpoint(epoch, val_metrics, fname='best_combined.pth')
+                print(f"===> New best combined score/best accuracy: {combined_score:.2f} (acc={current_val_acc:.2f}%, auc={current_spoof_auc:.4f})")
                 self.early_stop_counter = 0
             else:
                 self.early_stop_counter += 1
             
-            if current_spoof_auc > self.best_spoof_auc:
-                self.best_spoof_auc = current_spoof_auc
-                self.save_checkpoint(epoch, val_metrics, fname='best_spoof_auc.pth')
-                print(f"  ★ New best spoof AUC: {current_spoof_auc:.4f}")
+            # if current_spoof_auc > self.best_spoof_auc:
+            #     self.best_spoof_auc = current_spoof_auc
+            #     self.save_checkpoint(epoch, val_metrics, fname='best_spoof_auc.pth')
+            #     print(f"  ★ New best spoof AUC: {current_spoof_auc:.4f}")
             
             if self.early_stop_counter >= self.patience:
-                print(f"\n⚠️  Early stopping triggered after {epoch+1} epochs")
+                print(f"\n  Early stopping triggered after {epoch+1} epochs")
                 self.json_logger.log_early_stop(epoch, "Patience exceeded")
                 break
         
