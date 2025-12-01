@@ -29,8 +29,35 @@ This project is developed by [Your team/individual name] with the goal of [gener
 
 2. Set up a virtual environment (recommended: virtualenv/anaconda):
    ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -> venv\Scripts\activate
+    python -m venv venv
+    source venv/bin/activate  # On Windows: Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -> venv\Scripts\activate
+    
+    deactivate
+    pyenv install 3.11.8
+    pyenv virtualenv 3.11.8 attend3d_env
+
+    pyenv activate attend3d_env
+
+    1. 
+    python face_recognition_realtime.py
+
+    2.
+    python extract_embeddings.py \
+    --model /Users/nguyennguyenphong/Documents/study/Final/attend3d_ai/checkpoints/best_model.pth \
+    --input /Users/nguyennguyenphong/Documents/study/Final/attend3d_ai/registered_faces \
+    --device cpu
+
+    3.
+    python face_recognition_realtime.py \
+    --model /Users/nguyennguyenphong/Documents/study/Final/attend3d_ai/checkpoints/best_model.pth \
+    --embeddings /Users/nguyennguyenphong/Documents/study/Final/attend3d_ai/registered_faces \
+    --camera 0
+    or------
+    python face_recognition_realtime.py \
+    --model /Users/nguyennguyenphong/Documents/study/Final/attend3d_ai/checkpoints/best_model.pth \
+    --embeddings /Users/nguyennguyenphong/Documents/study/Final/attend3d_ai/registered_faces \
+    --identity-threshold 0.75 \
+    --spoof-threshold 0.25
    ```
 
 3. Install dependencies:

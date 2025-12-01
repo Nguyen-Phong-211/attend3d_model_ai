@@ -51,7 +51,57 @@ class ArcFaceHead(nn.Module):
         output *= self.s
         
         return output
+    
+# ============================================================================
+# DUAL-TASK HEAD
+# ============================================================================
 
+class DualTaskHead(nn.Module):
+    """Dual-head: Identity (ArcFace) + Spoof (Binary)"""
+    def __init__(self, embedding_dim, num_identities):
+        super().__init__()
+        
+        # Identity head - CHỈ CHO REAL
+        self.identity_head = ArcFaceHead(
+            in_features=embedding_dim,
+            out_features=num_identities,
+            s=70, m=0.35, easy_margin=False
+        )
+        
+        # Spoof head - CHO TẤT CẢ
+        self.spoof_head = nn.Sequential(
+            nn.Linear(embedding_dim, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 1)
+        )
+        
+    def forward(self, embeddings, labels=None, is_real=None):
+        identity_logits = None
+        
+        # Identity - chỉ tính cho real samples
+        if labels is not None and is_real is not None:
+            real_mask = is_real.bool()
+            if real_mask.sum() > 0:
+                real_emb = embeddings[real_mask]
+                real_labels = labels[real_mask]
+                
+                identity_logits = torch.zeros(
+                    embeddings.size(0), 
+                    self.identity_head.out_features,
+                    device=embeddings.device
+                )
+                identity_logits[real_mask] = self.identity_head(real_emb, real_labels)
+        
+        # Spoof - tính cho tất cả
+        spoof_score = self.spoof_head(embeddings)
+        
+        return identity_logits, spoof_score
 
 # ============================================================================
 # ANTI-SPOOFING HEAD
@@ -401,19 +451,22 @@ class Face3DFusionModel(nn.Module):
             nn.BatchNorm1d(emb)
         )
         
-        # === TASK HEADS ===
-        self.arcface = ArcFaceHead(
-            in_features=emb, 
-            out_features=num_classes, 
-            s=config.ARC_FACE_S, 
-            m=config.ARC_FACE_M,
-            easy_margin=getattr(config, 'ARC_EASY_MARGIN', False)
+        self.dual_head = DualTaskHead(
+            embedding_dim=emb,
+            num_identities=num_classes
         )
-        
-        # USE ANTI-SPOOF HEAD
-        self.anti_spoof = ImprovedAntiSpoofHead(emb)
 
-    def forward(self, inputs, labels=None):
+        if getattr(config, 'USE_DEPTH_AUX', True):
+            self.depth_branch = nn.Sequential(
+                nn.Linear(emb, 256),
+                nn.ReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(256, 32*32)
+            )
+        else:
+            self.depth_branch = None
+
+    def forward(self, inputs, labels=None, is_real=None):
         device = next(self.parameters()).device
         features = []
         
@@ -453,21 +506,19 @@ class Face3DFusionModel(nn.Module):
         embeddings = F.normalize(fused, p=2, dim=1)
         embeddings = F.dropout(embeddings, p=0.2, training=self.training)
         
-        # === TASK OUTPUTS ===
-        if labels is not None:
-            logits = self.arcface(embeddings, labels)
-        else:
-            logits = self.arcface(embeddings, None)
+        # DUAL HEAD
+        identity_logits, spoof_score = self.dual_head(embeddings, labels, is_real)
         
-        # IMPROVED ANTI-SPOOF OUTPUT
-        spoof_outputs = self.anti_spoof(embeddings)
+        # DEPTH PREDICTION (nếu có)
+        depth_pred = None
+        if self.depth_branch is not None:
+            depth_pred = self.depth_branch(embeddings).view(-1, 1, 32, 32)
         
         return {
             'embeddings': embeddings,
-            'logits': logits,
-            'spoof_score': spoof_outputs['spoof_score'],
-            'depth_pred': spoof_outputs['depth_pred'],
-            'consistency_feat': spoof_outputs['consistency_feat']
+            'identity_logits': identity_logits,
+            'spoof_score': spoof_score,
+            'depth_pred': depth_pred
         }
 
 
@@ -500,17 +551,71 @@ def create_model(num_classes, config):
     return model
 
 
-def load_checkpoint(model, checkpoint_path, device='cpu'):
-    """Load model from checkpoint"""
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+# def load_checkpoint(model, checkpoint_path, device='cpu'):
+#     """Load model from checkpoint"""
+#     checkpoint = torch.load(checkpoint_path, map_location=device)
     
-    if 'model' in checkpoint:
-        model.load_state_dict(checkpoint['model'])
+#     if 'model' in checkpoint:
+#         model.load_state_dict(checkpoint['model'])
+#     else:
+#         model.load_state_dict(checkpoint)
+    
+#     return model
+def load_checkpoint(model, checkpoint_path, device='cpu', strict=True):
+    """
+    Load model checkpoint - compatible với PyTorch 2.6+
+    Hỗ trợ nhiều format checkpoint khác nhau
+    """
+    print(f"Loading checkpoint from: {checkpoint_path}")
+    
+    try:
+        # Try safe load first
+        with torch.serialization.safe_globals(['numpy._core.multiarray.scalar']):
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+    except Exception as e:
+        print(f"Safe load failed: {e}")
+        print("Trying weights_only=False (trust checkpoint source)...")
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    # Xác định state_dict từ checkpoint
+    if isinstance(checkpoint, dict):
+        # Case 1: Checkpoint có key 'model_state_dict'
+        if 'model_state_dict' in checkpoint:
+            state_dict = checkpoint['model_state_dict']
+            print("Found 'model_state_dict' in checkpoint")
+        
+        # Case 2: Checkpoint có key 'model' (training checkpoint)
+        elif 'model' in checkpoint:
+            state_dict = checkpoint['model']
+            print("Found 'model' in checkpoint")
+            
+            # In thêm thông tin về training
+            if 'epoch' in checkpoint:
+                print(f"  Epoch: {checkpoint['epoch']}")
+            if 'metrics' in checkpoint:
+                print(f"  Metrics: {checkpoint['metrics']}")
+        
+        # Case 3: Checkpoint chính là state_dict
+        else:
+            state_dict = checkpoint
+            print("Checkpoint is state_dict directly")
     else:
-        model.load_state_dict(checkpoint)
+        state_dict = checkpoint
     
-    return model
-
+    # Load state_dict vào model
+    try:
+        model.load_state_dict(state_dict, strict=strict)
+        print("✓ Checkpoint loaded successfully")
+    except RuntimeError as e:
+        if "Missing key(s)" in str(e) or "Unexpected key(s)" in str(e):
+            print(f"\n⚠ Warning: {e}")
+            print("\nTrying to load with strict=False...")
+            model.load_state_dict(state_dict, strict=False)
+            print("✓ Checkpoint loaded (some keys skipped)")
+        else:
+            raise e
+    
+    return model, checkpoint
 
 def save_checkpoint(model, optimizer, scheduler, epoch, metrics, path):
     """Save model checkpoint"""

@@ -356,10 +356,6 @@ def get_dataloaders(config, split=0.8):
     for fp in config.DATA_PATHS_FAKE:
         fake_ds = Face3DDataset(fp, config, mode='train', is_fake=True)
         for s in fake_ds.samples:
-            # sub_id = s['subject_id']
-            # if sub_id not in fake_label_map:
-            #     fake_label_map[sub_id] = len(real_ds.label_map)+len(fake_label_map)
-            # s['label'] = fake_label_map[sub_id]
             s['label'] = 0  # ALL fake samples share the same label
             fake_samples.append(s)
 
@@ -406,13 +402,13 @@ def get_dataloaders(config, split=0.8):
     rng.shuffle(train_samples)
     rng.shuffle(val_samples)
     
-    print(f"\n✅ Stratified Split (FIXED):")
+    print(f"\nStratified Split (FIXED):")
     print(f"  Train: {len(train_samples)} ({len(train_real)} real + {len(train_fake)} fake)")
     print(f"  Val:   {len(val_samples)} ({len(val_real)} real + {len(val_fake)} fake)")
     
     # Sanity check
     if len(val_fake) == 0:
-        print("\n⚠️  WARNING: Still no fake samples in validation!")
+        print("\nWARNING: Still no fake samples in validation!")
         print("   Forcing at least 10% of fake samples to validation...")
         
         # Force at least 10% fake to validation

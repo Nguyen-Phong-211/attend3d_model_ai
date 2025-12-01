@@ -18,63 +18,66 @@ class Config:
     EMBEDDING_DIM = 512
     USE_ATTENTION_FUSION = True
     
-    # Model architectures
-    RGB_ARCH = 'resnet50' # -> resnet50
-    DEPTH_ARCH = 'resnet34' # -> resnet34
-    NORMAL_ARCH = 'resnet34' # -> resnet34
+    NUM_CLASSES = 374
     
-    # ===== TRAINING HYPERPARAMETERS - CRITICAL FIXES =====
-    BATCH_SIZE = 48
-    LEARNING_RATE = 5e-5
-    WEIGHT_DECAY = 5e-5
-    EPOCHS = 70
+    # Model architectures - BALANCED
+    RGB_ARCH = 'resnet50'      # Strong backbone for RGB
+    DEPTH_ARCH = 'resnet34'    # Lighter for depth
+    NORMAL_ARCH = 'resnet34'   # Lighter for normals
+    
+    # ===== TRAINING HYPERPARAMETERS - OPTIMIZED =====
+    BATCH_SIZE = 32            # GIẢM để model học tốt hơn
+    LEARNING_RATE = 1e-4       # TĂNG cho faster convergence
+    WEIGHT_DECAY = 1e-4        # TĂNG regularization
+    EPOCHS = 100               # TĂNG để model hội tụ đầy đủ
     NUM_WORKERS = 4
     SEED = 42
     
     # ===== OPTIMIZER & SCHEDULER =====
-    SCHEDULER = 'plateau'
+    SCHEDULER = 'plateau'      # Tốt hơn cho validation accuracy
     WARMUP_EPOCHS = 10
     MIN_LR = 1e-7
-    PATIENCE_SCHEDULER = 5
+    PATIENCE_SCHEDULER = 7     # TĂNG patience
     
     # ===== MIXED PRECISION & GRADIENT =====
     USE_AMP = True
     MAX_GRAD_NORM = 1.0
-    USE_GRADIENT_CHECKPOINT = False
+    USE_GRADIENT_CHECKPOINT = False  # Bật nếu thiếu memory
     
     # ===== EARLY STOPPING =====
-    PATIENCE = 35
+    PATIENCE = 50              # TĂNG để model có thời gian học
     
     # ===== 3D MESH SETTINGS =====
     USE_MESH = True
     MESH_MAX_VERTICES = 1024
     USE_FPS = True
     
-    # ===== ARCFACE SETTINGS - MORE RELAXED =====
-    ARC_FACE_S = 70
-    ARC_FACE_M = 0.35
+    # ===== ARCFACE SETTINGS - BALANCED =====
+    ARC_FACE_S = 64.0          # GIẢM cho easier training
+    ARC_FACE_M = 0.3           # GIẢM margin
     ARC_EASY_MARGIN = False
     
-    # ===== LOSS WEIGHTS - REBALANCED =====
-    SPOOF_LOSS_WEIGHT = 0.05
+    # ===== LOSS WEIGHTS - OPTIMIZED =====
+    # Note: Actual weights are in trainer._compute_loss()
+    SPOOF_LOSS_WEIGHT = 1.5
+    CENTER_LOSS_WEIGHT = 0.001
+    CONTRASTIVE_LOSS_WEIGHT = 0.5
+    DEPTH_AUX_WEIGHT = 0.1
     
     # CENTER LOSS
     USE_CENTER_LOSS = True
-    CENTER_LOSS_WEIGHT = 5e-5
+    USE_DEPTH_AUX = True
     
-    # DEPTH AUXILIARY
-    DEPTH_AUX_WEIGHT = 0.03
-    
-    # ===== AUGMENTATION - LIGHTER =====
+    # ===== AUGMENTATION - MODERATE =====
     USE_AUGMENTATION = True
-    AUG_ROTATION = 5
-    AUG_COLOR_JITTER = 0.1
-    AUG_RANDOM_BRIGHTNESS = 0.1
-    AUG_RANDOM_CONTRAST = 0.1
-    AUG_GAUSSIAN_NOISE = 0.005
-    AUG_MOTION_BLUR = False
-    AUG_CUTOUT_PROB = 0.15
-    AUG_CUTOUT_SIZE = 0.12
+    AUG_ROTATION = 10          # TĂNG augmentation
+    AUG_COLOR_JITTER = 0.2     # TĂNG
+    AUG_RANDOM_BRIGHTNESS = 0.2
+    AUG_RANDOM_CONTRAST = 0.2
+    AUG_GAUSSIAN_NOISE = 0.01  # TĂNG
+    AUG_MOTION_BLUR = True     # BẬT motion blur
+    AUG_CUTOUT_PROB = 0.2      # TĂNG cutout
+    AUG_CUTOUT_SIZE = 0.15
     
     # ===== DEVICE =====
     if torch.cuda.is_available():
@@ -89,7 +92,7 @@ class Config:
     CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, "best_model.pth")
     
     # ===== LOGGING =====
-    LOG_DIR = "runs/fixed_experiment_v3"
+    LOG_DIR = "runs/improved_experiment"
     JSON_LOG_DIR = "logs/experiments"
     LOG_INTERVAL = 20
     SAVE_EVERY = 5
@@ -102,6 +105,6 @@ class Config:
     SPOOF_THRESHOLD = 0.5
     
     # ===== LABEL SMOOTHING =====
-    LABEL_SMOOTHING = 0.02
+    LABEL_SMOOTHING = 0.1      # TĂNG để model không quá confident
 
 config = Config()
