@@ -1,8 +1,8 @@
-# attend3d_model_ai
+# 3D-FaceID-DeepLearning
 
 ## Introduction
 
-attend3d_model_ai is a project utilizing Artificial Intelligence (AI) and 3D modeling for [your purpose/industry, e.g., facial attendance, image recognition, data analysis, etc.].  
+3d-faceid-deeplearning is a project utilizing Artificial Intelligence (AI) and 3D modeling for [your purpose/industry, e.g., facial attendance, image recognition, data analysis, etc.].  
 This project is developed by [Your team/individual name] with the goal of [general purpose].
 
 ## Features
@@ -23,8 +23,8 @@ This project is developed by [Your team/individual name] with the goal of [gener
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/Nguyen-Phong-211/attend3d_model_ai.git
-   cd attend3d_model_ai
+   git clone https://github.com/Nguyen-Phong-211/3d-faceid-deeplearning.git
+   cd 3d-faceid-deeplearning
    ```
 
 2. Set up a virtual environment (recommended: virtualenv/anaconda):
@@ -134,4 +134,5 @@ Please see the LICENSE file for more details.
 ## Contact
 
 - Author: zephyrnguyen.vn@gmail.com
+
 - Github: [Nguyen-Phong-211](https://github.com/Nguyen-Phong-211)
